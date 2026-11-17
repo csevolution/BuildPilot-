@@ -2,6 +2,7 @@
 import {useEffect,useState} from 'react';
 import {supabase} from '../lib/supabase';
 import type {User} from '@supabase/supabase-js';
+import ProjectFiles from './ProjectFiles';
 type Project={id:string;name:string;address:string|null;status:string;budget:number;start_date:string|null;end_date:string|null;created_at:string};
 export default function Home(){
  const [user,setUser]=useState<User|null>(null),[ready,setReady]=useState(false),[projects,setProjects]=useState<Project[]>([]),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState(''),[showForm,setShowForm]=useState(false),[busy,setBusy]=useState(false);
