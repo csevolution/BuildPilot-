@@ -41,6 +41,8 @@ export default function ProjectFiles({ projectId, userId, unit }: {
   const [notice, setNotice] = useState('');
   const [opening, setOpening] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [organizing, setOrganizing] = useState(false);
+  const [changingCategory, setChangingCategory] = useState<string | null>(null);
   const loadVersion = useRef(0);
 
   const load = useCallback(async () => {
@@ -144,6 +146,68 @@ export default function ProjectFiles({ projectId, userId, unit }: {
     } finally { setDeleting(null); }
   }
 
+  // Only filenames with a clear kitchen/bathroom label are suggested for organization.
+  // The file in private storage is never moved, deleted, or re-uploaded.
+  function suggestedCategory(row: FileRow): string | null {
+    if (row.category !== 'Design References') return null;
+    if (/kitchen/i.test(row.file_name)) return 'Kitchen Design';
+    if (/bathroom/i.test(row.file_name)) return 'Bathroom Design';
+    return null;
+  }
+
+  async function changeFileCategory(row: FileRow, nextCategory: string) {
+    if (row.category === nextCategory || changingCategory || organizing) return;
+    setChangingCategory(row.id); setError(''); setNotice('');
+    try {
+      const { data, error: updateError } = await supabase.from('project_files')
+        .update({ category: nextCategory })
+        .eq('id', row.id).eq('project_id', projectId).eq('user_id', userId)
+        .select('id');
+      if (updateError) throw Error('DATABASE UPDATE: ' + updateError.message);
+      if (!data?.length) throw Error('Category was not updated. Check database update permissions.');
+      setFiles(prev => prev.map(f => f.id === row.id ? { ...f, category: nextCategory } : f));
+      setNotice(`Updated category for ${row.file_name}.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change category.');
+    } finally { setChangingCategory(null); }
+  }
+
+  const suggestedFiles = files.map(row => ({ row, nextCategory: suggestedCategory(row) }))
+    .filter((item): item is { row: FileRow; nextCategory: string } => item.nextCategory !== null);
+
+  async function organizeExistingFiles() {
+    if (!suggestedFiles.length || organizing || changingCategory) return;
+    const kitchenCount = suggestedFiles.filter(item => item.nextCategory === 'Kitchen Design').length;
+    const bathroomCount = suggestedFiles.filter(item => item.nextCategory === 'Bathroom Design').length;
+    const confirmed = window.confirm(
+      `Update categories for ${suggestedFiles.length} existing files?\n` +
+      `${kitchenCount} Kitchen Design; ${bathroomCount} Bathroom Design.\n\n` +
+      'Only category labels in the database will change. No files will be deleted or moved.'
+    );
+    if (!confirmed) return;
+    setOrganizing(true); setError(''); setNotice('');
+    let updated = 0;
+    try {
+      for (const { row, nextCategory } of suggestedFiles) {
+        const { data, error: updateError } = await supabase.from('project_files')
+          .update({ category: nextCategory })
+          .eq('id', row.id).eq('project_id', projectId).eq('user_id', userId)
+          .select('id');
+        if (updateError) throw Error('DATABASE UPDATE: ' + updateError.message);
+        if (!data?.length) throw Error('Category was not updated. Check database update permissions.');
+        updated++;
+      }
+      setNotice(`${updated} file categor${updated === 1 ? 'y' : 'ies'} organized successfully. No files were deleted.`);
+    } catch (e) {
+      setError(`${updated} of ${suggestedFiles.length} categories updated. ` +
+        (e instanceof Error ? e.message : 'Could not finish organizing.'));
+    } finally {
+      setOrganizing(false);
+      setFilter('All');
+      await load();
+    }
+  }
+
   const visibleFiles = filter === 'All' ? files : files.filter(row => row.category === filter);
   const cardStyle = { border: '1px solid #dae2ea', borderRadius: 14, overflow: 'hidden' as const, background: '#fff', minWidth: 0 };
 
@@ -171,6 +235,17 @@ export default function ProjectFiles({ projectId, userId, unit }: {
     {notice && <p className="success" role="status">{notice}</p>}
 
     <h3 style={{ marginTop: 28, marginBottom: 12 }}>Visual Gallery</h3>
+    {suggestedFiles.length > 0 && <div style={{ marginBottom: 16, padding: 14, background: '#f3f6fa', borderRadius: 12 }}>
+      <strong>Organize existing design images</strong>
+      <p className="muted" style={{ margin: '6px 0 10px' }}>
+        {suggestedFiles.length} file(s) labeled Kitchen or Bathroom can be moved to their proper gallery categories.
+        This only changes category labels; your private files stay in place.
+      </p>
+      <button type="button" disabled={organizing || changingCategory !== null}
+        onClick={() => void organizeExistingFiles()}>
+        {organizing ? 'Organizing…' : `Organize ${suggestedFiles.length} files`}
+      </button>
+    </div>}
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
       {['All', ...CATEGORIES].map(c => <button key={c} type="button"
         className={filter === c ? '' : 'secondary'}
@@ -195,6 +270,13 @@ export default function ProjectFiles({ projectId, userId, unit }: {
             <small className="muted" style={{ display: 'block', marginBottom: 10 }}>
               {row.category} · {(row.size_bytes / 1024 / 1024).toFixed(1)} MB · {new Date(row.created_at).toLocaleDateString('en-US')}
             </small>
+            <label htmlFor={`category-${row.id}`} style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>Change category</label>
+            <select id={`category-${row.id}`} value={row.category}
+              disabled={changingCategory === row.id || organizing}
+              onChange={e => void changeFileCategory(row, e.target.value)}
+              style={{ width: '100%', marginBottom: 10 }}>
+              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
             <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
               <button type="button" className="secondary" disabled={opening === row.id}
                 onClick={() => void openFile(row)}>{opening === row.id ? 'Opening…' : 'View'}</button>
