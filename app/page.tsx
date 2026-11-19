@@ -37,6 +37,11 @@ export default function Home(){
   const [portfolioTasks,setPortfolioTasks] = useState({total:0,done:0});
   const [section,setSection] = useState<Section>("dashboard");
   const [hour,setHour] = useState<number|null>(null);
+  const [coverUrls,setCoverUrls] = useState<Record<string,string>>({});
+  const [coverBusy,setCoverBusy] = useState<string|null>(null);
+  const [coverError,setCoverError] = useState("");
+  const [coverRefresh,setCoverRefresh] = useState(0);
+
 
   useEffect(()=>{
     const refresh = ()=>setHour(new Date().getHours());
@@ -76,6 +81,61 @@ export default function Home(){
     void loadPortfolio();
     return ()=>{cancelled=true};
   },[user,projects,selectedProject,section]);
+
+  // Cover images are private Supabase Storage objects; signed URLs expire after one hour.
+  useEffect(()=>{
+    if(!user){setCoverUrls({});return}
+    let cancelled=false;
+    async function loadCovers(){
+      const {data,error}=await supabase.from("project_files")
+        .select("project_id,storage_path,created_at")
+        .eq("user_id",user!.id).eq("category","Project Cover")
+        .order("created_at",{ascending:false});
+      if(error){if(!cancelled)setCoverError("Could not load cover photos: "+error.message);return}
+      const newest=new Map<string,string>();
+      for(const row of data||[])if(!newest.has(row.project_id))newest.set(row.project_id,row.storage_path);
+      const urls:Record<string,string>={};
+      await Promise.all([...newest].map(async ([projectId,path])=>{
+        const {data}=await supabase.storage.from("project-files").createSignedUrl(path,3600);
+        if(data?.signedUrl)urls[projectId]=data.signedUrl;
+      }));
+      if(!cancelled){setCoverUrls(urls);setCoverError("")}
+    }
+    void loadCovers();
+    const timer=window.setInterval(()=>void loadCovers(),45*60*1000);
+    return ()=>{cancelled=true;window.clearInterval(timer)};
+  },[user,coverRefresh]);
+
+  async function uploadCover(project:Project,file:File|undefined){
+    if(!file||!user)return;
+    const allowed=["image/jpeg","image/png","image/webp"];
+    if(!allowed.includes(file.type)){setCoverError("Choose a JPG, PNG or WebP image.");return}
+    if(file.size>10*1024*1024){setCoverError("Cover images must be smaller than 10 MB.");return}
+    setCoverBusy(project.id);setCoverError("");
+    try{
+      const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
+      const id=crypto.randomUUID();
+      const path=`${user.id}/${project.id}/${id}.${ext}`;
+      const {error:uploadError}=await supabase.storage.from("project-files")
+        .upload(path,file,{contentType:file.type,upsert:false});
+      if(uploadError)throw Error(uploadError.message);
+      const {error:dbError}=await supabase.from("project_files").insert({
+        id,project_id:project.id,user_id:user.id,unit_number:null,
+        category:"Project Cover",file_name:file.name,storage_path:path,
+        mime_type:file.type,size_bytes:file.size
+      });
+      if(dbError){await supabase.storage.from("project-files").remove([path]);throw Error(dbError.message)}
+      setCoverRefresh(v=>v+1);
+      setMessage("Cover photo updated for "+project.name+".");
+    }catch(e){setCoverError(e instanceof Error?e.message:"Could not upload cover photo.")}
+    finally{setCoverBusy(null)}
+  }
+
+  function coverPicker(project:Project){return <label className="bp-cover-picker" onClick={e=>e.stopPropagation()}>
+    {coverBusy===project.id?"Uploading…":"📷 Change Cover"}
+    <input type="file" accept="image/jpeg,image/png,image/webp" disabled={coverBusy!==null}
+      onChange={e=>{const file=e.currentTarget.files?.[0];void uploadCover(project,file);e.currentTarget.value=""}} />
+  </label>}
 
   async function login(reset=false){
     setBusy(true);setError("");setMessage("");
@@ -176,6 +236,13 @@ export default function Home(){
     /* Original 158 Putnam Ave photograph; displayed without image filters or alterations. */
     .bp-feature-photo.bp-putnam-cover{background-image:linear-gradient(90deg,rgba(9,25,43,.67) 0%,rgba(9,25,43,.18) 58%,rgba(9,25,43,.02) 100%),url("/putnam-cover.jpg");background-size:cover;background-position:center center}
     .bp-feature-photo.bp-putnam-cover:before{display:none}
+    .bp-feature-photo.bp-custom-cover{background-size:cover;background-position:center center}
+    .bp-feature-photo.bp-custom-cover:before{display:none}
+    .bp-cover-picker{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;background:#fff!important;color:#1769d2!important;border:1px solid #dce8fa;border-radius:11px;padding:9px 12px;font-size:12px;font-weight:750;box-shadow:0 4px 15px #172b4420}
+    .bp-cover-picker input{display:none}.bp-cover-picker:has(input:disabled){opacity:.6;cursor:wait}
+    .bp-cover-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:2}
+    .bp-cover-error{background:#fff1f0;color:#a91b1b;border-radius:12px;padding:12px 15px;margin-bottom:14px;font-size:13px}
+
     .bp-feature-photo.bp-putnam-cover h2,.bp-feature-photo.bp-putnam-cover p{text-shadow:0 2px 10px rgba(0,0,0,.55)}
     .bp-feature-photo.bp-putnam-cover .bp-feature-pill{background:rgba(16,35,56,.45);backdrop-filter:blur(8px)}
     .bp-feature-photo:before{content:"";position:absolute;right:-30px;bottom:-45px;width:65%;height:78%;opacity:.3;background:repeating-linear-gradient(90deg,transparent 0 44px,#dbeaff 45px 47px,transparent 48px 93px),linear-gradient(0deg,#fff5,transparent);clip-path:polygon(10% 25%,35% 10%,55% 25%,75% 7%,98% 25%,98% 100%,10% 100%)}
@@ -214,12 +281,12 @@ export default function Home(){
   </> : <>
     <div className="bp-top"><div><p className="bp-eyebrow">BuildPilot / Your workspace</p><h1 className="bp-title">{greeting}, Cesar! {greetingIcon}</h1><p className="bp-subtitle">Your construction workspace is ready. Let’s make progress today.</p></div><button className="bp-signout" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>
     <div className="bp-quick"><button onClick={()=>navigate("projects")}>Manage Projects →</button><button onClick={()=>navigate("finances")}>Track Expenses →</button><button onClick={()=>navigate("tasks")}>Manage Tasks →</button></div>
-    <div className="bp-feature"><section className={"bp-feature-photo"+(featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?" bp-putnam-cover":"")}><div><span className="bp-feature-pill">✦ Featured Project</span><h2>{featured?.name||"Your next project starts here"}</h2><p>{featured?.address||"Create a project to get started"}</p><p style={{marginTop:8,fontSize:13}}>{featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?"Residential townhouses · 3 units":"Construction workspace"}</p></div><button className="bp-feature-open" onClick={()=>featured?openProject(featured):startCreate()}>{featured?"Open Project →":"Create Project →"}</button></section><section className="bp-feature-summary"><h3>Portfolio Overview</h3><div className="bp-feature-row"><span>Projects</span><strong>{live.length}</strong></div><div className="bp-feature-row"><span>Planned Budget</span><strong>{money(budget)}</strong></div><div className="bp-feature-row"><span>Total Spent</span><strong>{money(portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Remaining Budget</span><strong>{money(budget-portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Tasks Completed</span><strong>{portfolioTasks.done} / {portfolioTasks.total}</strong></div></section></div>
+    {coverError&&<p className="bp-cover-error" role="alert">{coverError}</p>}<div className="bp-feature"><section className={"bp-feature-photo"+(featured&&coverUrls[featured.id]?" bp-custom-cover":featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?" bp-putnam-cover":"")} style={featured&&coverUrls[featured.id]?{backgroundImage:`linear-gradient(90deg,rgba(9,25,43,.67),rgba(9,25,43,.10)),url("${coverUrls[featured.id]}")`}:undefined}><div><span className="bp-feature-pill">✦ Featured Project</span><h2>{featured?.name||"Your next project starts here"}</h2><p>{featured?.address||"Create a project to get started"}</p><p style={{marginTop:8,fontSize:13}}>{featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?"Residential townhouses · 3 units":"Construction workspace"}</p></div><div className="bp-cover-actions"><button className="bp-feature-open" onClick={()=>featured?openProject(featured):startCreate()}>{featured?"Open Project →":"Create Project →"}</button>{featured&&coverPicker(featured)}</div></section><section className="bp-feature-summary"><h3>Portfolio Overview</h3><div className="bp-feature-row"><span>Projects</span><strong>{live.length}</strong></div><div className="bp-feature-row"><span>Planned Budget</span><strong>{money(budget)}</strong></div><div className="bp-feature-row"><span>Total Spent</span><strong>{money(portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Remaining Budget</span><strong>{money(budget-portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Tasks Completed</span><strong>{portfolioTasks.done} / {portfolioTasks.total}</strong></div></section></div>
     <div className="bp-stats"><div className="bp-stat"><span className="bp-stat-icon">▦</span><div className="bp-stat-label">Total Projects</div><div className="bp-stat-value">{live.length}</div><div className="bp-stat-foot">Excludes archived projects</div></div><div className="bp-stat"><span className="bp-stat-icon">◉</span><div className="bp-stat-label">Active Projects</div><div className="bp-stat-value">{active}</div><div className="bp-stat-foot">Currently marked active</div></div><div className="bp-stat"><span className="bp-stat-icon">$</span><div className="bp-stat-label">Planned Budget</div><div className="bp-stat-value">{money(budget)}</div><div className="bp-stat-foot">Spent: {money(portfolioSpent)} · Remaining: {money(budget-portfolioSpent)}</div></div><div className="bp-stat"><span className="bp-stat-icon">◷</span><div className="bp-stat-label">Planning Projects</div><div className="bp-stat-value">{planning}</div><div className="bp-stat-foot">{completed} projects completed · {portfolioTasks.done}/{portfolioTasks.total} tasks done</div></div></div>
     <section className="bp-panel"><div className="bp-panel-header"><div><p className="bp-eyebrow">Portfolio</p><h2 className="bp-panel-title">Your Projects</h2></div><div className="bp-filter"><label htmlFor="project-filter">Filter</label><select id="project-filter" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All current</option><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option><option value="archived">Archived</option></select><button className="bp-action" onClick={()=>showForm?(setShowForm(false),setEditingId(null)):startCreate()}>{showForm?"Cancel":"+ New Project"}</button></div></div>
     {error&&<p className="error" role="alert">{error}</p>}{message&&<p className="bp-msg">{message}</p>}
     {showForm&&<form className="bp-form" onSubmit={saveProject}><h3>{editingId?"Edit Project":"New Project"}</h3><div className="formgrid"><div><label>Project name *</label><input required maxLength={160} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div><div><label>Address</label><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></div><div><label>Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option>{editingId&&<option value="archived">Archived</option>}</select></div><div><label>Budget (USD)</label><input type="number" min="0" step="0.01" value={form.budget} onChange={e=>setForm({...form,budget:e.target.value})}/></div><div><label>Start date</label><input type="date" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></div><div><label>Target end date</label><input type="date" value={form.end_date} onChange={e=>setForm({...form,end_date:e.target.value})}/></div></div><p><button className="bp-action" disabled={busy}>{busy?"Saving…":editingId?"Update Project":"Save Project"}</button></p></form>}
-    <div className="bp-projects">{shown.length===0?<p className="bp-empty">No projects in this category.</p>:shown.map(p=><article key={p.id} className="bp-project"><div className="bp-projecthead"><button className="bp-projectname" onClick={()=>openProject(p)}>{p.name} ↗</button><span className={"bp-badge "+(p.status==="active"?"active":p.status==="planning"?"planning":"")}>{title(p.status)}</span></div><p className="bp-address">{p.address||"No address added"}</p><div className="bp-projectbudget">{money(p.budget)}</div><div className="bp-small">Planned project budget</div><div className="bp-dates">{date(p.start_date)} → {date(p.end_date)}</div><div className="bp-projectfoot"><button className="bp-open" onClick={()=>openProject(p)}>Open Project →</button><button className="bp-open" onClick={()=>startEdit(p)}>Edit</button><button className="bp-archive" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button><button className="bp-danger" disabled={busy} onClick={()=>deleteProject(p)}>Delete</button></div></article>)}</div></section>
+    <div className="bp-projects">{shown.length===0?<p className="bp-empty">No projects in this category.</p>:shown.map(p=><article key={p.id} className="bp-project"><div className="bp-projecthead"><button className="bp-projectname" onClick={()=>openProject(p)}>{p.name} ↗</button><span className={"bp-badge "+(p.status==="active"?"active":p.status==="planning"?"planning":"")}>{title(p.status)}</span></div><p className="bp-address">{p.address||"No address added"}</p><div className="bp-projectbudget">{money(p.budget)}</div><div className="bp-small">Planned project budget</div><div className="bp-dates">{date(p.start_date)} → {date(p.end_date)}</div><div className="bp-projectfoot"><button className="bp-open" onClick={()=>openProject(p)}>Open Project →</button>{coverPicker(p)}<button className="bp-open" onClick={()=>startEdit(p)}>Edit</button><button className="bp-archive" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button><button className="bp-danger" disabled={busy} onClick={()=>deleteProject(p)}>Delete</button></div></article>)}</div></section>
     <div className="bp-bottom"><section className="bp-panel"><p className="bp-eyebrow">Project pipeline</p><h2 className="bp-panel-title">Status Overview</h2>{[["Planning",planning],["Active",active],["Completed",completed],["On Hold",live.filter(p=>p.status==="on_hold").length]].map(([name,count])=><div className="bp-listrow" key={name}><span>{name}</span><strong>{count}</strong></div>)}</section><section className="bp-panel"><p className="bp-eyebrow">Schedule</p><h2 className="bp-panel-title">Target Completion Dates</h2>{live.filter(p=>p.end_date&&p.status!=="completed").sort((a,b)=>(a.end_date||"").localeCompare(b.end_date||"")).slice(0,4).map(p=><div className="bp-listrow" key={p.id}><span>{p.name}</span><strong>{date(p.end_date)}</strong></div>)}{!live.some(p=>p.end_date&&p.status!=="completed")&&<p className="bp-empty">No upcoming completion dates.</p>}</section></div><p className="bp-empty">Choose Financial Management or Tasks & Schedule in the sidebar to manage live project records.</p>
   </>}
   </main></div>;
