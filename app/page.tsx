@@ -1,317 +1,70 @@
 "use client";
-
-import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
-import type { User } from "@supabase/supabase-js";
-import { supabase } from "../lib/supabase";
+import {useEffect,useState} from "react";
+import type {FormEvent} from "react";
+import type {User} from "@supabase/supabase-js";
+import {supabase} from "../lib/supabase";
 import ProjectFiles from "./ProjectFiles";
 import DesignStudio from "./DesignStudio";
 import Operations from "./Operations";
-
-type Project = { id:string; name:string; address:string|null; status:string; budget:number; start_date:string|null; end_date:string|null; created_at:string };
-type ProjectForm = { name:string; address:string; status:string; budget:string; start_date:string; end_date:string };
-type Section = "dashboard"|"projects"|"finances"|"tasks"|"design"|"files"|"notes"|"settings"|"archived";
-const blank:ProjectForm = {name:"",address:"",status:"planning",budget:"",start_date:"",end_date:""};
-const money = (n:number) => Number(n||0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0});
-const date = (s:string|null) => s ? new Date(s+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "Not scheduled";
-const title = (s:string) => s.replace(/_/g," ").replace(/^./,x=>x.toUpperCase());
-
+type Project={id:string;name:string;address:string|null;status:string;budget:number;start_date:string|null;end_date:string|null;created_at:string};
+type Task={project_id:string;status:string;title?:string;name?:string;due_date?:string|null;priority?:string;category?:string;phase?:string};
+type Section="dashboard"|"projects"|"tasks"|"finances"|"design"|"files"|"notes"|"settings"|"archived"|"calendar";
+const blank={name:"",address:"",status:"planning",budget:"",start_date:"",end_date:""};
+const money=(n:number)=>Number(n||0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0});
+const date=(s:string|null|undefined)=>s?new Date(s.slice(0,10)+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"Not scheduled";
+const title=(s:string)=>s.replace(/_/g," ").replace(/^./,x=>x.toUpperCase());
+const putnam=(p:Project)=>/158\s+putnam/i.test(p.name+" "+(p.address||""));
+const day=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 export default function Home(){
-  const [user,setUser] = useState<User|null>(null);
-  const [ready,setReady] = useState(false);
-  const [projects,setProjects] = useState<Project[]>([]);
-  const [email,setEmail] = useState("");
-  const [password,setPassword] = useState("");
-  const [busy,setBusy] = useState(false);
-  const [error,setError] = useState("");
-  const [message,setMessage] = useState("");
-  const [selectedProject,setSelectedProject] = useState<string|null>(null);
-  const [dashboardProject,setDashboardProject] = useState<string|null>(null);
-  const [selectedUnit,setSelectedUnit] = useState(1);
-  const [notes,setNotes] = useState<Record<string,string>>({});
-  const [note,setNote] = useState("");
-  const [showForm,setShowForm] = useState(false);
-  const [editingId,setEditingId] = useState<string|null>(null);
-  const [form,setForm] = useState<ProjectForm>(blank);
-  const [filter,setFilter] = useState("all");
-  const [portfolioSpent,setPortfolioSpent] = useState(0);
-  const [portfolioTasks,setPortfolioTasks] = useState({total:0,done:0});
-  const [section,setSection] = useState<Section>("dashboard");
-  const [hour,setHour] = useState<number|null>(null);
-  const [coverUrls,setCoverUrls] = useState<Record<string,string>>({});
-  const [coverBusy,setCoverBusy] = useState<string|null>(null);
-  const [coverError,setCoverError] = useState("");
-  const [coverRefresh,setCoverRefresh] = useState(0);
-
-
-  useEffect(()=>{
-    const refresh = ()=>setHour(new Date().getHours());
-    refresh();
-    const interval = window.setInterval(refresh,60_000);
-    document.addEventListener("visibilitychange",refresh);
-    return ()=>{window.clearInterval(interval);document.removeEventListener("visibilitychange",refresh)};
-  },[]);
-  const greeting = hour===null ? "Welcome back" : hour<12 ? "Good morning" : hour<18 ? "Good afternoon" : "Good evening";
-  const greetingIcon = hour===null ? "✨" : hour<12 ? "☀️" : hour<18 ? "🌤️" : "🌙";
-
-  useEffect(()=>{
-    supabase.auth.getUser().then(({data,error})=>{if(error)setError(error.message);setUser(data.user);setReady(true)});
-    const {data:{subscription}} = supabase.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));
-    return ()=>subscription.unsubscribe();
-  },[]);
-  useEffect(()=>{if(user)void load();else{setProjects([]);setSelectedProject(null);setDashboardProject(null)}},[user]);
-  useEffect(()=>{if(!user)return;try{const value=localStorage.getItem("buildpilot-notes-"+user.id);setNotes(value?JSON.parse(value):{})}catch{setNotes({})}},[user]);
-
-  async function load(){
-    const {data,error} = await supabase.from("projects").select("*").order("created_at",{ascending:false});
-    if(error)setError(error.message);else{setProjects(data||[]);setError("")}
-  }
-  useEffect(()=>{
-    if(!user)return;
-    let cancelled=false;
-    async function loadPortfolio(){
-      const [e,t] = await Promise.all([
-        supabase.from("project_expenses").select("project_id,amount").eq("user_id",user!.id),
-        supabase.from("project_tasks").select("project_id,status").eq("user_id",user!.id)
-      ]);
-      if(cancelled)return;
-      const liveIds=new Set(projects.filter(p=>p.status!=="archived").map(p=>p.id));
-      if(!e.error)setPortfolioSpent((e.data||[]).filter(x=>liveIds.has(x.project_id)).reduce((a,x)=>a+Number(x.amount||0),0));
-      if(!t.error){const rows=(t.data||[]).filter(x=>liveIds.has(x.project_id));setPortfolioTasks({total:rows.length,done:rows.filter(x=>x.status==="done").length})}
-    }
-    void loadPortfolio();
-    return ()=>{cancelled=true};
-  },[user,projects,selectedProject,section]);
-
-  // Cover images are private Supabase Storage objects; signed URLs expire after one hour.
-  useEffect(()=>{
-    if(!user){setCoverUrls({});return}
-    let cancelled=false;
-    async function loadCovers(){
-      const {data,error}=await supabase.from("project_files")
-        .select("project_id,storage_path,created_at")
-        .eq("user_id",user!.id).eq("category","Project Cover")
-        .order("created_at",{ascending:false});
-      if(error){if(!cancelled)setCoverError("Could not load cover photos: "+error.message);return}
-      const newest=new Map<string,string>();
-      for(const row of data||[])if(!newest.has(row.project_id))newest.set(row.project_id,row.storage_path);
-      const urls:Record<string,string>={};
-      await Promise.all([...newest].map(async ([projectId,path])=>{
-        const {data}=await supabase.storage.from("project-files").createSignedUrl(path,3600);
-        if(data?.signedUrl)urls[projectId]=data.signedUrl;
-      }));
-      if(!cancelled){setCoverUrls(urls);setCoverError("")}
-    }
-    void loadCovers();
-    const timer=window.setInterval(()=>void loadCovers(),45*60*1000);
-    return ()=>{cancelled=true;window.clearInterval(timer)};
-  },[user,coverRefresh]);
-
-  async function uploadCover(project:Project,file:File|undefined){
-    if(!file||!user)return;
-    const allowed=["image/jpeg","image/png","image/webp"];
-    if(!allowed.includes(file.type)){setCoverError("Choose a JPG, PNG or WebP image.");return}
-    if(file.size>10*1024*1024){setCoverError("Cover images must be smaller than 10 MB.");return}
-    setCoverBusy(project.id);setCoverError("");
-    try{
-      const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
-      const id=crypto.randomUUID();
-      const path=`${user.id}/${project.id}/${id}.${ext}`;
-      const {error:uploadError}=await supabase.storage.from("project-files")
-        .upload(path,file,{contentType:file.type,upsert:false});
-      if(uploadError)throw Error(uploadError.message);
-      const {error:dbError}=await supabase.from("project_files").insert({
-        id,project_id:project.id,user_id:user.id,unit_number:null,
-        category:"Project Cover",file_name:file.name,storage_path:path,
-        mime_type:file.type,size_bytes:file.size
-      });
-      if(dbError){await supabase.storage.from("project-files").remove([path]);throw Error(dbError.message)}
-      setCoverRefresh(v=>v+1);
-      setMessage("Cover photo updated for "+project.name+".");
-    }catch(e){setCoverError(e instanceof Error?e.message:"Could not upload cover photo.")}
-    finally{setCoverBusy(null)}
-  }
-
-  function coverPicker(project:Project,compact=false){return <label className={"bp-cover-picker"+(compact?" bp-cover-picker-compact":"")} title="Change cover photo" aria-label="Change cover photo" onClick={e=>e.stopPropagation()}>
-    {coverBusy===project.id?"…":compact?"📷":"📷 Change Cover"}
-    <input type="file" accept="image/jpeg,image/png,image/webp" disabled={coverBusy!==null}
-      onChange={e=>{const file=e.currentTarget.files?.[0];void uploadCover(project,file);e.currentTarget.value=""}} />
-  </label>}
-
-  async function login(reset=false){
-    setBusy(true);setError("");setMessage("");
-    try{
-      if(reset){
-        if(!email)throw Error("Enter your email first.");
-        const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin+"/reset"});
-        if(error)throw error;
-        setMessage("Password reset email requested.");
-      }else{
-        const {error}=await supabase.auth.signInWithPassword({email,password});
-        if(error)throw error;
-      }
-    }catch(e){setError(e instanceof Error?e.message:"Authentication failed")}
-    finally{setBusy(false)}
-  }
-  function startCreate(){setFilter("all");setSection("projects");setSelectedProject(null);setEditingId(null);setForm(blank);setShowForm(true);setError("")}
-  function startEdit(p:Project){setSection("settings");setSelectedProject(p.id);setEditingId(p.id);setForm({name:p.name,address:p.address||"",status:p.status,budget:String(p.budget||0),start_date:p.start_date||"",end_date:p.end_date||""});setShowForm(true);setError("")}
-  async function saveProject(e:FormEvent){
-    e.preventDefault();if(!user)return;
-    setBusy(true);setError("");
-    const payload={name:form.name.trim(),address:form.address.trim()||null,status:form.status,budget:Number(form.budget||0),start_date:form.start_date||null,end_date:form.end_date||null};
-    const result=editingId ? await supabase.from("projects").update(payload).eq("id",editingId).eq("user_id",user.id) : await supabase.from("projects").insert({...payload,user_id:user.id});
-    setBusy(false);
-    if(result.error){setError(result.error.message);return}
-    setShowForm(false);setEditingId(null);setForm(blank);
-    setMessage(editingId?"Project updated successfully.":"Project created successfully.");
-    await load();
-  }
-  async function archive(p:Project){
-    if(!user||!window.confirm(p.status==="archived"?"Restore this project?":"Archive this project?"))return;
-    setError("");
-    const {error}=await supabase.from("projects").update({status:p.status==="archived"?"planning":"archived"}).eq("id",p.id).eq("user_id",user.id);
-    if(error)setError(error.message);else {if(selectedProject===p.id)navigate("archived");await load();}
-  }
-  async function deleteProject(p:Project){
-    if(!user)return;
-    const confirmation=window.prompt(`PERMANENT DELETE: Type the project name exactly to delete "${p.name}" and its linked records. This cannot be undone.`);
-    if(confirmation!==p.name)return;
-    setBusy(true);setError("");
-    const {error:deleteError}=await supabase.from("projects").delete().eq("id",p.id).eq("user_id",user.id);
-    setBusy(false);
-    if(deleteError){setError(deleteError.message);return}
-    if(selectedProject===p.id)setSelectedProject(null);
-    setMessage(`Deleted ${p.name}. Check file storage separately for any uploaded files.`);
-    await load();
-  }
-  function navigate(next:Section){
-    setSection(next);setShowForm(false);setEditingId(null);setSelectedProject(null);setFilter(next==="archived"?"archived":"all");setMessage("");
-  }
-  function openProject(p:Project,next:Section="projects"){
-    setSection(next);setSelectedProject(p.id);setDashboardProject(p.id);setShowForm(false);setEditingId(null);setSelectedUnit(1);setMessage("");
-    const putnam=/158\s+putnam/i.test(p.name+" "+(p.address||""));
-    setNote(notes[p.id+":"+(putnam?1:0)]||"");
-  }
-  function switchUnit(id:string,n:number){setSelectedUnit(n);setNote(notes[id+":"+n]||"")}
-  function saveNote(id:string,n:number){
-    if(!user)return;
-    const next={...notes,[id+":"+n]:note};
-    try{localStorage.setItem("buildpilot-notes-"+user.id,JSON.stringify(next));setNotes(next);setMessage("Notes saved on this device.")}
-    catch{setError("Could not save notes on this device.")}
-  }
-
-  const live=projects.filter(p=>p.status!=="archived");
-  const active=live.filter(p=>p.status==="active").length;
-  const planning=live.filter(p=>p.status==="planning").length;
-  const completed=live.filter(p=>p.status==="completed").length;
-  const shown=projects.filter(p=>filter==="all"?p.status!=="archived":filter==="archived"?p.status==="archived":p.status===filter);
-  const current=projects.find(p=>p.id===selectedProject);
-  const featured=live.find(p=>p.id===dashboardProject)||live.find(p=>/158\s+putnam/i.test(p.name+" "+(p.address||"")))||live[0];
-  const budget=live.reduce((sum,p)=>sum+Number(p.budget||0),0);
-  const putnam=current ? /158\s+putnam/i.test(current.name+" "+(current.address||"")) : false;
-
-  if(!ready)return <div className="auth">Loading BuildPilot…</div>;
-  if(!user)return <div className="auth"><div className="brand" style={{color:"#092744"}}>Build<span>Pilot</span></div><h2>Welcome back</h2><p className="muted">Secure construction project management</p><div className="field"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)}/></div><div className="field"><label>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void login()}}/></div>{error&&<p className="error">{error}</p>}{message&&<p className="success">{message}</p>}<button disabled={busy} onClick={()=>login()}>Sign in</button><p><button className="secondary" disabled={busy} onClick={()=>login(true)}>Forgot password?</button></p></div>;
-
-  return <div className="shell bp-shell"><style>{`
-    .bp-shell{min-height:100vh;background:#f5f7fb;color:#1b2d44;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    .bp-shell .sidebar{background:linear-gradient(180deg,#f9fbff,#edf2fa);border-right:1px solid #e2e8f2;min-width:240px;box-shadow:2px 0 24px #20364a08}
-    .bp-shell .main{width:100%;min-width:0;max-width:none;padding:36px clamp(18px,3vw,48px)}
-    .bp-shell .brand{font-weight:850;letter-spacing:-1.1px;font-size:27px;color:#172b44}.bp-shell .brand span{color:#2378f4}
-    .bp-caption{color:#8390a3;font-size:12px;text-transform:uppercase;letter-spacing:1.6px;margin:26px 12px 10px;font-weight:700}
-    .bp-side-note{color:#718399;font-size:13px;line-height:1.6;margin:12px}
-    .bp-nav{display:flex;flex-direction:column;gap:8px;margin-top:16px}
-    .bp-nav button{display:block;width:100%;background:transparent!important;color:#53657c!important;text-align:left!important;border:0!important;border-radius:13px!important;padding:14px 15px!important;font-weight:600!important;font-size:14px!important}
-    .bp-nav button.selected,.bp-nav button:hover{background:#fff!important;color:#1769d2!important;box-shadow:0 5px 18px #254b7812}
-    .bp-my-projects{display:flex;flex-direction:column;gap:4px;margin:0 0 12px}
-    .bp-my-projects button{width:100%;text-align:left!important;background:transparent!important;color:#53657c!important;border:0!important;border-radius:10px!important;padding:10px 15px!important;font-size:13px!important;font-weight:600!important;white-space:normal;overflow-wrap:anywhere}
-    .bp-my-projects button:hover,.bp-my-projects button.selected{background:#e4efff!important;color:#1769d2!important}
-    .bp-my-projects button:focus-visible{outline:2px solid #2679ef;outline-offset:-2px}
-    .bp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:23px}
-    .bp-eyebrow{color:#7b8ca3;font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin:0 0 9px}
-    .bp-title{color:#1c2d43;font-size:clamp(30px,3.5vw,46px);font-weight:800;letter-spacing:-1.7px;line-height:1.14;margin:0}
-    .bp-subtitle{color:#8190a3;font-size:15px;margin:11px 0 0}
-    .bp-signout{background:#fff!important;color:#173653!important;border:1px solid #dde6ed!important;border-radius:13px!important;padding:11px 16px!important}
-    .bp-quick{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
-    .bp-quick button{background:#fff!important;border:1px solid #dbe5ee!important;color:#173451!important;border-radius:13px!important;padding:11px 14px!important;font-weight:700!important;box-shadow:0 4px 16px #24415e0a}
-    .bp-feature{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(250px,.7fr);gap:18px;margin-bottom:22px}
-    .bp-feature-photo{min-height:290px;position:relative;overflow:hidden;border-radius:26px;background:linear-gradient(135deg,#203b5c,#4c7293 55%,#a9bfcf);padding:28px;display:flex;flex-direction:column;justify-content:space-between;color:#fff;box-shadow:0 12px 30px #17314d24}
-    /* Original 158 Putnam Ave photograph; displayed without image filters or alterations. */
-    .bp-feature-photo.bp-putnam-cover{background-image:linear-gradient(90deg,rgba(9,25,43,.67) 0%,rgba(9,25,43,.18) 58%,rgba(9,25,43,.02) 100%),url("/putnam-cover.jpg");background-size:cover;background-position:center center}
-    .bp-feature-photo.bp-putnam-cover:before{display:none}
-    .bp-feature-photo.bp-custom-cover{background-size:cover;background-position:center center}
-    .bp-feature-photo.bp-custom-cover:before{display:none}
-    .bp-cover-picker{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;background:#fff!important;color:#1769d2!important;border:1px solid #dce8fa;border-radius:11px;padding:9px 12px;font-size:12px;font-weight:750;box-shadow:0 4px 15px #172b4420}
-    .bp-cover-picker input{display:none}.bp-cover-picker:has(input:disabled){opacity:.6;cursor:wait}
-    .bp-cover-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:2}
-
-    /* BuildPilot 3.4 — Clean Project Cover */
-    .bp-feature-photo{position:relative}
-    .bp-feature-photo .bp-cover-description{font-size:14px!important;font-weight:550;letter-spacing:.1px;margin-top:8px!important}
-    .bp-feature-photo .bp-cover-actions{margin-top:18px}
-    .bp-feature-photo .bp-feature-open{font-size:13px!important;padding:10px 15px!important}
-    .bp-cover-corner{position:absolute!important;top:19px;right:19px;z-index:5!important}
-    .bp-cover-picker.bp-cover-picker-compact{width:38px;height:38px;min-width:38px;padding:0!important;border-radius:12px!important;background:rgba(255,255,255,.94)!important;color:#174c83!important;font-size:18px!important;box-shadow:0 4px 15px #0c1b3040}
-    .bp-cover-picker.bp-cover-picker-compact:hover{background:#fff!important}
-    @media(max-width:760px){.bp-cover-corner{top:14px;right:14px}.bp-cover-picker.bp-cover-picker-compact{width:35px;height:35px;min-width:35px}.bp-feature-photo .bp-feature-open{padding:10px 13px!important}}
-    .bp-cover-error{background:#fff1f0;color:#a91b1b;border-radius:12px;padding:12px 15px;margin-bottom:14px;font-size:13px}
-
-    .bp-feature-photo.bp-putnam-cover h2,.bp-feature-photo.bp-putnam-cover p{text-shadow:0 2px 10px rgba(0,0,0,.55)}
-    .bp-feature-photo.bp-putnam-cover .bp-feature-pill{background:rgba(16,35,56,.45);backdrop-filter:blur(8px)}
-    .bp-feature-photo:before{content:"";position:absolute;right:-30px;bottom:-45px;width:65%;height:78%;opacity:.3;background:repeating-linear-gradient(90deg,transparent 0 44px,#dbeaff 45px 47px,transparent 48px 93px),linear-gradient(0deg,#fff5,transparent);clip-path:polygon(10% 25%,35% 10%,55% 25%,75% 7%,98% 25%,98% 100%,10% 100%)}
-    .bp-feature-photo>*{position:relative;z-index:1}.bp-feature-photo h2{font-size:clamp(25px,3vw,39px);letter-spacing:-1px;color:#fff;margin:7px 0}.bp-feature-photo p{color:#e5f0ff;margin:0}
-    .bp-feature-pill{display:inline-flex;align-self:flex-start;border-radius:99px;background:#ffffff30;border:1px solid #ffffff50;padding:8px 13px;font-size:12px;font-weight:700}
-    .bp-feature-open{align-self:flex-start;background:#fff!important;color:#216bd0!important;border-radius:12px!important;padding:11px 17px!important;font-weight:700!important}
-    .bp-feature-summary,.bp-panel,.bp-stat{background:#fff;border:1px solid #e7edf5;border-radius:23px;box-shadow:0 8px 32px #243e6110}
-    .bp-feature-summary{border-radius:26px;padding:25px;display:flex;flex-direction:column;justify-content:center;gap:13px}.bp-feature-summary h3{font-size:21px;margin:0;color:#21344b}
-    .bp-feature-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #edf1f6;padding:12px 0;color:#77889b}.bp-feature-row strong{color:#21344b;overflow-wrap:anywhere;text-align:right}.bp-feature-row:last-child{border-bottom:0}
-    .bp-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:24px}
-    .bp-stat{padding:23px;min-width:0}.bp-stat-label{color:#77889f;font-size:13px;font-weight:600}.bp-stat-value{font-weight:850;font-size:clamp(24px,2.7vw,33px);letter-spacing:-.7px;margin:13px 0 9px;overflow-wrap:anywhere;line-height:1.1;color:#1b2d44}.bp-stat-foot{font-size:12px;color:#8594a4}.bp-stat-icon{display:inline-flex;align-items:center;justify-content:center;border-radius:13px;background:#e9f1ff;color:#2577ee;font-size:18px;width:36px;height:36px;float:right}
-    .bp-panel{padding:23px;margin-bottom:20px}.bp-panel-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:19px}.bp-panel-title{margin:0;color:#21344b;font-size:19px;letter-spacing:-.4px}
-    .bp-action{border-radius:13px!important;background:#2679ef!important;color:#fff!important;font-weight:750!important;padding:11px 15px!important}
-    .bp-projects{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.bp-project{border:1px solid #e4ebf4;border-radius:20px;background:#fff;padding:23px;min-width:0;box-shadow:0 5px 20px #213a5710}
-    .bp-projecthead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}.bp-projectname{border:0!important;background:transparent!important;padding:0!important;font-size:18px!important;color:#1e3551!important;font-weight:800!important;text-align:left!important;line-height:1.35!important;overflow-wrap:anywhere}
-    .bp-badge{display:inline-block;padding:5px 10px;background:#edf3f9;border-radius:50px;color:#557087;font-size:11px;font-weight:750;white-space:nowrap}.bp-badge.active{background:#e5f7ed;color:#167b50}.bp-badge.planning{background:#fff1e5;color:#b65b12}
-    .bp-address{font-size:13px;color:#72859a;margin:10px 0 17px;overflow-wrap:anywhere}.bp-projectbudget{font-size:22px;font-weight:850;color:#153451;margin:0}.bp-small{font-size:11px;color:#8495a6;margin:3px 0 15px}.bp-dates{border-top:1px solid #e8edf3;padding-top:12px;font-size:12px;color:#60788c}
-    .bp-projectfoot{display:flex;justify-content:space-between;align-items:center;gap:9px;margin-top:15px;flex-wrap:wrap}.bp-open{background:#eaf2ff!important;color:#2679ef!important;border:1px solid #d9e8ff!important;padding:8px 12px!important;border-radius:11px!important;font-weight:750!important}.bp-archive{font-size:12px!important;background:transparent!important;color:#7c91a4!important;border:0!important;padding:8px!important}.bp-danger{background:#fff1f0!important;color:#b42318!important;border:1px solid #ffd0cb!important;border-radius:8px!important;padding:8px!important;font-weight:700!important}
-    .bp-bottom{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bp-listrow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid #edf1f5;color:#435e77;font-size:13px}.bp-empty{color:#8596a6;font-size:13px;line-height:1.6}.bp-form{background:#f8fafc;border:1px solid #e1e9f1;border-radius:14px;padding:17px;margin-bottom:18px}.bp-form label{display:block;margin-bottom:5px}.bp-form input,.bp-form select{max-width:100%}.bp-filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bp-filter select{width:auto;min-width:130px}.bp-msg{margin:12px 0;padding:10px;border-radius:8px;background:#e5f7ed;color:#167b50}
-    @media(max-width:1050px){.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:950px){.bp-feature{grid-template-columns:1fr}}@media(max-width:760px){.bp-shell .sidebar{min-width:0;background:#f2f6fc;border-right:0}.bp-shell .main{padding:20px 14px}.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.bp-stat{padding:15px}.bp-projects,.bp-bottom{grid-template-columns:1fr}.bp-feature-photo{min-height:240px}.bp-panel{padding:17px}}@media(max-width:400px){.bp-stat-value{font-size:22px}.bp-stat-icon{width:30px;height:30px}}
-  `}</style>
-  <aside className="sidebar"><div className="brand">Build<span>Pilot</span></div>
-    <p className="bp-caption">Workspace</p><nav className="bp-nav">
-    <button className={section==="dashboard"?"selected":""} onClick={()=>navigate("dashboard")}>▦ Dashboard</button>
-    <button className={showForm&&!editingId?"selected":""} onClick={startCreate}>＋ New Project</button></nav>
-    <p className="bp-caption">My Projects</p><nav className="bp-nav" aria-label="My Projects">
-    {live.map(p=><div key={p.id}><button className={selectedProject===p.id?"selected":""} aria-expanded={selectedProject===p.id} onClick={()=>selectedProject===p.id?navigate("dashboard"):openProject(p)}>{selectedProject===p.id?"⌄":"›"} {p.name}</button>
-    {selectedProject===p.id&&<div style={{paddingLeft:14}}>{([ ["projects","Overview"],["tasks","Tasks & Schedule"],["finances","Finances"],["design","Design Studio"],["files","Photos & Files"],["notes","Project Notes"],["settings","Project Settings"] ] as const).map(([key,label])=><button key={key} className={section===key?"selected":""} onClick={()=>key==="settings"?startEdit(p):openProject(p,key)}>{label}</button>)}</div>}</div>)}
-    </nav><p className="bp-caption">Archive</p><nav className="bp-nav"><button className={section==="archived"?"selected":""} onClick={()=>navigate("archived")}>▧ Archived Projects</button></nav></aside>
-  <main className="main">
-  {current&&section!=="dashboard" ? <>
-    <div className="bp-top"><div><button className="secondary" onClick={()=>{navigate("dashboard")}}>← Back to Projects</button><h1>{current.name}</h1><p className="muted">{current.address||"No address added"} · {title(current.status)}</p></div><button className="secondary" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>
-    <div className="bp-stats"><div className="bp-stat"><div className="bp-stat-label">Project Budget</div><div className="bp-stat-value">{money(current.budget)}</div></div><div className="bp-stat"><div className="bp-stat-label">Start Date</div><div className="bp-stat-value" style={{fontSize:19}}>{date(current.start_date)}</div></div><div className="bp-stat"><div className="bp-stat-label">Target End Date</div><div className="bp-stat-value" style={{fontSize:19}}>{date(current.end_date)}</div></div><div className="bp-stat"><div className="bp-stat-label">Project Status</div><div className="bp-stat-value" style={{fontSize:19}}>{title(current.status)}</div><button className="bp-open" onClick={()=>startEdit(current)}>Edit Project</button></div></div>
-    {error&&<p className="error">{error}</p>}{message&&<p className="bp-msg">{message}</p>}
-    {section==="settings"&&<section className="bp-panel"><h2>Project Settings</h2>    {showForm&&<form className="bp-form" onSubmit={saveProject}><h3>{editingId?"Edit Project":"New Project"}</h3><div className="formgrid"><div><label>Project name *</label><input required maxLength={160} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div><div><label>Address</label><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></div><div><label>Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option>{editingId&&<option value="archived">Archived</option>}</select></div><div><label>Budget (USD)</label><input type="number" min="0" step="0.01" value={form.budget} onChange={e=>setForm({...form,budget:e.target.value})}/></div><div><label>Start date</label><input type="date" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></div><div><label>Target end date</label><input type="date" value={form.end_date} onChange={e=>setForm({...form,end_date:e.target.value})}/></div></div><p><button className="bp-action" disabled={busy}>{busy?"Saving…":editingId?"Update Project":"Save Project"}</button></p></form>}<button className="bp-open" onClick={()=>startEdit(current)}>Edit Project</button> <button className="bp-archive" onClick={()=>archive(current)}>{current.status==="archived"?"Restore":"Archive"}</button> <button className="bp-danger" disabled={busy} onClick={()=>deleteProject(current)}>Delete</button></section>}
-    {section==="projects"&&<section className={"bp-feature-photo"+(coverUrls[current.id]?" bp-custom-cover":putnam?" bp-putnam-cover":"")} style={coverUrls[current.id]?{backgroundImage:`linear-gradient(90deg,rgba(9,25,43,.67),rgba(9,25,43,.10)),url("${coverUrls[current.id]}")`}:undefined}><div><span className="bp-feature-pill">Project Overview</span><h2>{current.name}</h2><p>{putnam?"Residential Townhouses · 3 Units":current.address||"Construction Project"}</p></div><div className="bp-cover-corner">{coverPicker(current,true)}</div></section>}
-    {coverError&&<p className="bp-cover-error">{coverError}</p>}
-    {(section==="projects"||section==="tasks"||section==="finances")&&<Operations key={current.id+section} projectId={current.id} userId={user.id} projectBudget={Number(current.budget||0)} mode={section==="tasks"?"tasks":section==="finances"?"finances":"all"}/>}
-    {(section==="notes"||section==="design"||section==="files")&&<>
-      {putnam&&<><p className="muted">Select a unit to view and edit its notes.</p><div className="unit-tabs">{[1,2,3].map(n=><button key={n} className={selectedUnit===n?"":"secondary"} onClick={()=>switchUnit(current.id,n)}>Unit {n}</button>)}</div></>}{section==="notes"&&<section className="bp-panel"><h2>Project Notes</h2><h3>Notes — {putnam?"Unit "+selectedUnit:"Project"}</h3><textarea rows={5} value={note} onChange={e=>setNote(e.target.value)} placeholder="Add construction and design notes here..."/><p><button onClick={()=>saveNote(current.id,putnam?selectedUnit:0)}>Save Notes</button></p><p className="muted" style={{fontSize:12}}>Notes are saved on this device only. Cloud sync is a separate upcoming update.</p></section>}
-      {section==="design"&&(putnam?<DesignStudio key={current.id+selectedUnit} projectId={current.id} userId={user.id} unit={selectedUnit}/>:<p className="bp-empty">Design Studio is currently configured for 158 Putnam Ave only.</p>)}
-      {section==="files"&&<>{putnam&&<><h2 style={{marginTop:24}}>Shared Project Files</h2><p className="muted">Files shared by all three units, including common kitchen and flooring references.</p><ProjectFiles projectId={current.id} userId={user.id} unit={null}/><h2 style={{marginTop:24}}>Unit {selectedUnit} Files</h2></>}
-      <ProjectFiles projectId={current.id} userId={user.id} unit={putnam?selectedUnit:null}/></>}
-    </>}
-  </> : <>
-    <div className="bp-top"><div><p className="bp-eyebrow">BuildPilot / Your workspace</p><h1 className="bp-title">{greeting}, Cesar! {greetingIcon}</h1><p className="bp-subtitle">Your construction workspace is ready. Let’s make progress today.</p></div><button className="bp-signout" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>
-
-    {section==="dashboard"&&<>{coverError&&<p className="bp-cover-error" role="alert">{coverError}</p>}<div className="bp-feature"><section className={"bp-feature-photo"+(featured&&coverUrls[featured.id]?" bp-custom-cover":featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?" bp-putnam-cover":"")} style={featured&&coverUrls[featured.id]?{backgroundImage:`linear-gradient(90deg,rgba(9,25,43,.67),rgba(9,25,43,.10)),url("${coverUrls[featured.id]}")`}:undefined}><div><span className="bp-feature-pill">✦ Featured Project</span><h2>{featured?.name||"Your next project starts here"}</h2><p className="bp-cover-description">{featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?"Residential Townhouses · 3 Units":featured?"Construction Project":"Create a project to get started"}</p></div><div className="bp-cover-actions"><button className="bp-feature-open" onClick={()=>featured?openProject(featured):startCreate()}>{featured?"Open Project →":"Create Project →"}</button></div>{featured&&<div className="bp-cover-corner">{coverPicker(featured,true)}</div>}</section><section className="bp-feature-summary"><h3>Portfolio Overview</h3><div className="bp-feature-row"><span>Projects</span><strong>{live.length}</strong></div><div className="bp-feature-row"><span>Planned Budget</span><strong>{money(budget)}</strong></div><div className="bp-feature-row"><span>Total Spent</span><strong>{money(portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Remaining Budget</span><strong>{money(budget-portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Tasks Completed</span><strong>{portfolioTasks.done} / {portfolioTasks.total}</strong></div></section></div>
-    <div className="bp-stats"><div className="bp-stat"><span className="bp-stat-icon">▦</span><div className="bp-stat-label">Total Projects</div><div className="bp-stat-value">{live.length}</div><div className="bp-stat-foot">Excludes archived projects</div></div><div className="bp-stat"><span className="bp-stat-icon">◉</span><div className="bp-stat-label">Active Projects</div><div className="bp-stat-value">{active}</div><div className="bp-stat-foot">Currently marked active</div></div><div className="bp-stat"><span className="bp-stat-icon">$</span><div className="bp-stat-label">Planned Budget</div><div className="bp-stat-value">{money(budget)}</div><div className="bp-stat-foot">Spent: {money(portfolioSpent)} · Remaining: {money(budget-portfolioSpent)}</div></div><div className="bp-stat"><span className="bp-stat-icon">◷</span><div className="bp-stat-label">Planning Projects</div><div className="bp-stat-value">{planning}</div><div className="bp-stat-foot">{completed} projects completed · {portfolioTasks.done}/{portfolioTasks.total} tasks done</div></div></div>
-    </>}
-    <section className="bp-panel"><div className="bp-panel-header"><div><p className="bp-eyebrow">Portfolio</p><h2 className="bp-panel-title">Your Projects</h2></div><div className="bp-filter"><label htmlFor="project-filter">Filter</label><select id="project-filter" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All current</option><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option><option value="archived">Archived</option></select><button className="bp-action" onClick={()=>showForm?(setShowForm(false),setEditingId(null)):startCreate()}>{showForm?"Cancel":"+ New Project"}</button></div></div>
-    {error&&<p className="error" role="alert">{error}</p>}{message&&<p className="bp-msg">{message}</p>}
-
-    {showForm&&<form className="bp-form" onSubmit={saveProject}><h3>{editingId?"Edit Project":"New Project"}</h3><div className="formgrid"><div><label>Project name *</label><input required maxLength={160} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div><div><label>Address</label><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></div><div><label>Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option>{editingId&&<option value="archived">Archived</option>}</select></div><div><label>Budget (USD)</label><input type="number" min="0" step="0.01" value={form.budget} onChange={e=>setForm({...form,budget:e.target.value})}/></div><div><label>Start date</label><input type="date" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></div><div><label>Target end date</label><input type="date" value={form.end_date} onChange={e=>setForm({...form,end_date:e.target.value})}/></div></div><p><button className="bp-action" disabled={busy}>{busy?"Saving…":editingId?"Update Project":"Save Project"}</button></p></form>}
-    <div className="bp-projects">{shown.length===0?<p className="bp-empty">No projects in this category.</p>:shown.map(p=><article key={p.id} className="bp-project"><div className="bp-projecthead"><button className="bp-projectname" onClick={()=>openProject(p)}>{p.name} ↗</button><span className={"bp-badge "+(p.status==="active"?"active":p.status==="planning"?"planning":"")}>{title(p.status)}</span></div><p className="bp-address">{p.address||"No address added"}</p><div className="bp-projectbudget">{money(p.budget)}</div><div className="bp-small">Planned project budget</div><div className="bp-dates">{date(p.start_date)} → {date(p.end_date)}</div><div className="bp-projectfoot"><button className="bp-open" onClick={()=>openProject(p)}>Open Project →</button>{coverPicker(p)}<button className="bp-open" onClick={()=>startEdit(p)}>Edit</button><button className="bp-archive" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button><button className="bp-danger" disabled={busy} onClick={()=>deleteProject(p)}>Delete</button></div></article>)}</div></section>
-    <div className="bp-bottom"><section className="bp-panel"><p className="bp-eyebrow">Project pipeline</p><h2 className="bp-panel-title">Status Overview</h2>{[["Planning",planning],["Active",active],["Completed",completed],["On Hold",live.filter(p=>p.status==="on_hold").length]].map(([name,count])=><div className="bp-listrow" key={name}><span>{name}</span><strong>{count}</strong></div>)}</section><section className="bp-panel"><p className="bp-eyebrow">Schedule</p><h2 className="bp-panel-title">Target Completion Dates</h2>{live.filter(p=>p.end_date&&p.status!=="completed").sort((a,b)=>(a.end_date||"").localeCompare(b.end_date||"")).slice(0,4).map(p=><div className="bp-listrow" key={p.id}><span>{p.name}</span><strong>{date(p.end_date)}</strong></div>)}{!live.some(p=>p.end_date&&p.status!=="completed")&&<p className="bp-empty">No upcoming completion dates.</p>}</section></div><p className="bp-empty">Select a project in the sidebar to manage its records.</p>
-  </>}
-  </main></div>;
+ const [user,U]=useState<User|null>(null),[ready,R]=useState(false),[projects,P]=useState<Project[]>([]),[tasks,T]=useState<Task[]>([]),[spent,S]=useState(0),[taskError,TE]=useState(""),[expenseError,EE]=useState("");
+ const [email,E]=useState(""),[password,W]=useState(""),[busy,B]=useState(false),[error,ER]=useState(""),[message,M]=useState("");
+ const [section,N]=useState<Section>("dashboard"),[selected,Q]=useState<string|null>(null),[featured,F]=useState<string|null>(null),[unit,V]=useState(1),[filter,FL]=useState("all"),[search,SE]=useState("");
+ const [form,FM]=useState(blank),[editing,ED]=useState<string|null>(null),[showForm,SF]=useState(false),[notes,NS]=useState<Record<string,string>>({}),[note,NT]=useState("");
+ const [covers,C]=useState<Record<string,string>>({}),[coverBusy,CB]=useState<string|null>(null),[refresh,RF]=useState(0),[full,FU]=useState<string|null>(null),[hour,H]=useState<number|null>(null);
+ useEffect(()=>{const tick=()=>H(new Date().getHours());tick();const i=window.setInterval(tick,60000);return()=>window.clearInterval(i)},[]);
+ useEffect(()=>{supabase.auth.getUser().then(({data,error})=>{if(error)ER(error.message);U(data.user);R(true)});const {data:{subscription}}=supabase.auth.onAuthStateChange((_,s)=>U(s?.user??null));return()=>subscription.unsubscribe()},[]);
+ async function load(){const {data,error}=await supabase.from("projects").select("*").order("created_at",{ascending:false});if(error)ER(error.message);else P(data||[])}
+ useEffect(()=>{if(user){void load();try{NS(JSON.parse(localStorage.getItem("buildpilot-notes-"+user.id)||"{}"))}catch{NS({})}}else{P([]);T([]);S(0);C({});Q(null);F(null);NS({});NT("");N("dashboard");SF(false);FU(null)}},[user]);
+ useEffect(()=>{if(!user)return;let stop=false;async function run(){const ids=new Set(projects.filter(p=>p.status!=="archived").map(p=>p.id));const all:Task[]=[];let failure="";for(let offset=0;;offset+=500){const r=await supabase.from("project_tasks").select("*").eq("user_id",user!.id).order("id").range(offset,offset+499);if(r.error){failure=r.error.message;break}all.push(...(r.data||[]));if((r.data||[]).length<500)break}const expenses=await supabase.from("project_expenses").select("project_id,amount").eq("user_id",user!.id);if(stop)return;TE(failure);T(failure?[]:all);EE(expenses.error?.message||"");S((expenses.data||[]).filter(x=>ids.has(x.project_id)).reduce((a,x)=>a+Number(x.amount||0),0))}void run();return()=>{stop=true}},[user,projects,section,selected,refresh]);
+ useEffect(()=>{if(!user)return;let stop=false;async function run(){const r=await supabase.from("project_files").select("project_id,storage_path,created_at").eq("user_id",user!.id).eq("category","Project Cover").order("created_at",{ascending:false});if(r.error){if(!stop)ER(r.error.message);return}const map=new Map<string,string>();for(const row of r.data||[])if(!map.has(row.project_id))map.set(row.project_id,row.storage_path);const urls:Record<string,string>={};await Promise.all([...map].map(async ([id,path])=>{const {data}=await supabase.storage.from("project-files").createSignedUrl(path,3600);if(data?.signedUrl)urls[id]=data.signedUrl}));if(!stop)C(urls)}void run();const i=window.setInterval(run,45*60000);return()=>{stop=true;window.clearInterval(i)}},[user,refresh]);
+ useEffect(()=>{if(!full)return;const close=(e:KeyboardEvent)=>{if(e.key==="Escape")FU(null)};window.addEventListener("keydown",close);return()=>window.removeEventListener("keydown",close)},[full]);
+ async function login(reset=false){B(true);ER("");M("");try{if(reset){if(!email)throw Error("Enter your email first.");const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:location.origin+"/reset"});if(error)throw error;M("Password reset email requested.")}else{const {error}=await supabase.auth.signInWithPassword({email,password});if(error)throw error}}catch(e){ER(e instanceof Error?e.message:"Authentication failed")}finally{B(false)}}
+ function navigate(s:Section){N(s);Q(null);SF(false);ED(null);FL(s==="archived"?"archived":"all");SE("");M("");ER("")}
+ function open(p:Project,s:Section="projects"){N(s);Q(p.id);F(p.id);SF(false);ED(null);V(1);NT(notes[p.id+":"+(putnam(p)?1:0)]||"");M("");ER("")}
+ function create(){navigate("projects");FM(blank);SF(true)}
+ function edit(p:Project){open(p,"settings");ED(p.id);FM({name:p.name,address:p.address||"",status:p.status,budget:String(p.budget||0),start_date:p.start_date||"",end_date:p.end_date||""});SF(true)}
+ async function save(e:FormEvent){e.preventDefault();if(!user)return;B(true);ER("");const payload={name:form.name.trim(),address:form.address.trim()||null,status:form.status,budget:Number(form.budget||0),start_date:form.start_date||null,end_date:form.end_date||null};const r=editing?await supabase.from("projects").update(payload).eq("id",editing).eq("user_id",user.id):await supabase.from("projects").insert({...payload,user_id:user.id});B(false);if(r.error){ER(r.error.message);return}SF(false);ED(null);M("Project saved successfully.");await load()}
+ async function archive(p:Project){if(!user||!confirm(p.status==="archived"?"Restore this project?":"Archive this project?"))return;const r=await supabase.from("projects").update({status:p.status==="archived"?"planning":"archived"}).eq("id",p.id).eq("user_id",user.id);if(r.error)ER(r.error.message);else{navigate("archived");await load()}}
+ async function remove(p:Project){if(!user||prompt(`PERMANENT DELETE: Type the project name exactly to delete "${p.name}" and its linked records.`)!==p.name)return;B(true);const r=await supabase.from("projects").delete().eq("id",p.id).eq("user_id",user.id);B(false);if(r.error)ER(r.error.message);else{navigate("projects");M("Project deleted. Check file storage separately.");await load()}}
+ async function upload(p:Project,file?:File){if(!file||!user)return;if(!["image/jpeg","image/png","image/webp"].includes(file.type)||file.size>10485760){ER("Choose a JPG, PNG or WebP image under 10 MB.");return}CB(p.id);ER("");try{const id=crypto.randomUUID(),path=`${user.id}/${p.id}/${id}.${file.type.split("/")[1]}`;const r=await supabase.storage.from("project-files").upload(path,file,{contentType:file.type,upsert:false});if(r.error)throw r.error;const db=await supabase.from("project_files").insert({id,project_id:p.id,user_id:user.id,unit_number:null,category:"Project Cover",file_name:file.name,storage_path:path,mime_type:file.type,size_bytes:file.size});if(db.error){await supabase.storage.from("project-files").remove([path]);throw db.error}RF(x=>x+1);M("Cover updated.")}catch(e){ER((e as {message?:string}).message||"Upload failed.")}finally{CB(null)}}
+ const picker=(p:Project)=><label className="v4-picker" title="Change cover photo">{coverBusy===p.id?"…":"📷"}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={coverBusy!==null} onChange={e=>{void upload(p,e.currentTarget.files?.[0]);e.currentTarget.value=""}}/></label>;
+ const live=projects.filter(p=>p.status!=="archived"),current=projects.find(p=>p.id===selected),hero=live.find(p=>p.id===featured)||live.find(putnam)||live[0],active=live.filter(p=>p.status==="active").length,budget=live.reduce((a,p)=>a+Number(p.budget||0),0),ids=new Set(live.map(p=>p.id)),all=tasks.filter(t=>ids.has(t.project_id)),done=all.filter(t=>t.status==="done").length;
+ const progress=(id:string)=>{const rows=tasks.filter(t=>t.project_id===id);return rows.length?Math.round(100*rows.filter(t=>t.status==="done").length/rows.length):0};
+ const photo=(p:Project)=>covers[p.id]||(putnam(p)?"/putnam-cover.jpg":"");
+ const today=day(new Date()),next=new Date();next.setDate(next.getDate()+7);const horizon=day(next);
+ const pending=all.filter(t=>t.status!=="done"),due=pending.filter(t=>t.due_date&&t.due_date.slice(0,10)<=today),inspections=pending.filter(t=>/inspection/i.test(t.title||t.name||"")&&t.due_date&&t.due_date.slice(0,10)>=today&&t.due_date.slice(0,10)<=horizon),overdue=due.filter(t=>t.due_date!.slice(0,10)<today);
+ const shown=projects.filter(p=>(filter==="all"?p.status!=="archived":p.status===filter)&&`${p.name} ${p.address||""}`.toLowerCase().includes(search.toLowerCase()));
+ const cycle=(n:number)=>{if(hero&&live.length)F(live[(live.indexOf(hero)+n+live.length)%live.length].id)};
+ const bar=(value:number)=><div className="v4-track"><i style={{width:`${value}%`}}/></div>;
+ const nav=(s:Section,label:string,icon:string)=><button className={section===s&&!current?"chosen":""} onClick={()=>navigate(s)}><span>{icon}</span>{label}</button>;
+ const projectForm=<form className="v4-form" onSubmit={save}><h3>{editing?"Edit Project":"New Project"}</h3><div className="v4-formgrid">{([ ["name","Project name","text"],["address","Address","text"],["budget","Budget (USD)","number"],["start_date","Start date","date"],["end_date","Target end date","date"]] as const).map(([k,l,t])=><label key={k}>{l}<input required={k==="name"} type={t} min={t==="number"?0:undefined} step={t==="number"?"0.01":undefined} value={form[k]} onChange={e=>FM({...form,[k]:e.target.value})}/></label>)}<label>Status<select value={form.status} onChange={e=>FM({...form,status:e.target.value})}>{["planning","active","on_hold","completed",...(editing?["archived"]:[])].map(s=><option key={s} value={s}>{title(s)}</option>)}</select></label></div><button disabled={busy}>{busy?"Saving…":"Save Project"}</button> <button type="button" className="secondary" onClick={()=>SF(false)}>Cancel</button></form>;
+ if(!ready)return <div className="auth">Loading BuildPilot…</div>;
+ if(!user)return <div className="auth"><div className="brand">Build<span>Pilot</span></div><h2>Welcome back</h2><p>Secure construction project management</p><label>Email<input type="email" value={email} onChange={e=>E(e.target.value)}/></label><label>Password<input type="password" value={password} onChange={e=>W(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void login()}}/></label>{error&&<p className="error">{error}</p>}{message&&<p>{message}</p>}<button disabled={busy} onClick={()=>login()}>Sign in</button><button className="secondary" disabled={busy} onClick={()=>login(true)}>Forgot password?</button></div>;
+ return <div className="v4"><style>{`
+ .v4{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100vh;background:#f1f5fb;color:#142744;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px}.v4 *{box-sizing:border-box}.v4 button{cursor:pointer}.v4 button:focus-visible,.v4 input:focus-visible{outline:2px solid #287aff;outline-offset:2px}.v4-side{padding:24px 14px;background:#f8faff;border-right:1px solid #dce5f1}.v4-logo{font-size:25px;font-weight:850;letter-spacing:-1px;margin:0 8px 30px}.v4-logo b{color:#0866ef}.v4-label{font-size:11px;font-weight:800;letter-spacing:1px;color:#64748b;margin:22px 8px 9px;text-transform:uppercase}.v4-nav{display:grid;gap:5px}.v4-nav button{display:flex;align-items:center;gap:9px;text-align:left;width:100%;background:transparent!important;color:#314966!important;border:0!important;padding:10px 9px!important;border-radius:10px!important;font-size:13px!important;white-space:normal;overflow-wrap:anywhere}.v4-nav button.chosen,.v4-nav button:hover{background:#e0edff!important;color:#075bd6!important}.v4-nav img{width:32px;height:26px;object-fit:cover;border-radius:5px}.v4-dot{width:7px;height:7px;border-radius:50%;background:#19a65a;flex-shrink:0;margin-left:auto}.v4-subnav{padding-left:14px}.v4-main{padding:22px clamp(14px,2vw,30px);min-width:0}.v4-top{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-bottom:18px}.v4-search{max-width:480px;width:100%;border:1px solid #dce5f2!important;background:#eaf0f9!important;border-radius:22px!important;padding:10px 16px!important}.v4 h1{font-size:clamp(26px,3vw,40px);letter-spacing:-1.3px;margin:0 0 5px;color:#102449}.v4 h2{font-size:18px;margin:0;color:#142744}.v4-muted{color:#64748b;font-size:12px}.v4-greeting{margin-bottom:17px}.v4-feature{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(250px,1fr);gap:14px;margin-bottom:16px}.v4-hero{position:relative;min-height:300px;border-radius:18px;overflow:hidden;background:#254666;display:flex;flex-direction:column;justify-content:space-between;padding:20px;color:white}.v4-hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center}.v4-hero:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,#071c37b0,transparent 80%);pointer-events:none}.v4-hero>*:not(img){position:relative;z-index:1}.v4-hero h2{color:white;font-size:clamp(24px,2.6vw,36px);margin:10px 0 4px;max-width:80%;text-shadow:0 1px 6px #0008}.v4-pill{display:inline-block;background:#173552b0;color:white;border:1px solid #ffffff60;padding:6px 10px;border-radius:20px;font-size:12px}.v4-hero-actions{display:flex;justify-content:space-between;align-items:center;gap:8px}.v4-hero button,.v4-picker{background:#fff!important;color:#124a9c!important;border:0!important;border-radius:12px!important;padding:9px 12px!important;font-weight:700;cursor:pointer}.v4-picker input{display:none}.v4-tools{position:absolute!important;right:12px;top:12px;display:flex;gap:6px}.v4-panel{background:white;border:1px solid #e0e7f2;border-radius:17px;padding:16px;margin-bottom:16px;min-width:0;box-shadow:0 3px 12px #173b6507}.v4-feature .v4-panel{margin:0}.v4-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.v4-metric{background:#f6f9fe;border:1px solid #e5edf7;border-radius:12px;padding:12px;min-width:0}.v4-metric strong{display:block;font-size:25px;margin:7px 0;color:#122b50}.v4-track{height:6px;background:#e1e8f2;border-radius:20px;overflow:hidden;margin:7px 0}.v4-track i{display:block;height:100%;background:#21a65b;border-radius:20px}.v4-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:13px}.v4-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.v4-card{border:1px solid #e0e7f1;border-radius:13px;overflow:hidden;background:white;min-width:0}.v4-cardphoto{height:112px;position:relative;background:#e1eaf5;display:grid;place-items:center;color:#7890ac}.v4-cardphoto img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}.v4-status{position:absolute;right:7px;top:7px;background:#e8effb;color:#315b91;padding:4px 8px;border-radius:12px;font-size:11px;font-weight:700}.v4-status.active{background:#d6f7e3;color:#08733b}.v4-cardbody{padding:11px;overflow-wrap:anywhere}.v4-cardname{background:none!important;color:#142744!important;border:0!important;padding:0!important;text-align:left;font-weight:750!important;font-size:13px!important}.v4-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #eaf0f6}.v4-row:last-child{border:0}.v4-bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:14px}.v4-design{background:linear-gradient(135deg,#fff,#e4efff);display:flex;flex-direction:column;justify-content:center;gap:12px}.v4-formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:15px}.v4-form label{display:grid;gap:5px}.v4-form input,.v4-form select{width:100%;min-width:0}.v4-form{padding:15px;background:#f5f8fd;border-radius:12px;margin-bottom:15px}.v4-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.v4-actions button{font-size:11px!important;padding:6px 8px!important}.v4-error{color:#a91b1b;background:#fff1f0;padding:10px;border-radius:8px}.v4-message{color:#137346;background:#e5f7ed;padding:10px;border-radius:8px}.v4-modal{position:fixed;inset:0;z-index:9999;background:#08182af5;display:grid;place-items:center;padding:30px}.v4-modal img{max-width:100%;max-height:85vh;object-fit:contain}.v4-modal button{position:absolute;top:15px;right:15px}.v4-link{background:transparent!important;color:#0866df!important;border:0!important;padding:4px!important;font-weight:700!important}.v4-finance{display:flex;gap:18px;flex-wrap:wrap}.v4-finance strong{display:block;margin-top:4px;font-size:17px}.v4-alert{color:#b45309}.v4-unit{display:flex;gap:8px;margin:12px 0}.v4 textarea{width:100%}.v4-select{max-width:160px}.v4-projecthero{margin-bottom:16px}.v4-projecthero img{object-fit:contain;background:#1b344d}.v4-projecthero:after{background:linear-gradient(90deg,#071c3790,transparent 65%)}
+ @media(max-width:1050px){.v4{grid-template-columns:185px minmax(0,1fr)}.v4-feature{grid-template-columns:1fr}.v4-cards{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}}@media(max-width:700px){.v4{display:block}.v4-side{padding:12px}.v4-logo{margin:0 0 8px}.v4-nav{display:flex;flex-wrap:wrap}.v4-nav>button,.v4-nav>div{width:auto;max-width:100%}.v4-label{margin:10px 0 5px}.v4-main{padding:14px}.v4-bottom{grid-template-columns:1fr}.v4-hero{min-height:245px}.v4-formgrid{grid-template-columns:1fr}.v4-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.v4-top{flex-wrap:wrap}.v4-subnav{padding-left:0}.v4-metric strong{font-size:22px}}@media(max-width:360px){.v4-cards{grid-template-columns:1fr}}
+ `}</style><aside className="v4-side"><div className="v4-logo">▥ Build<b>Pilot</b></div><div className="v4-label">Workspace</div><nav className="v4-nav">{nav("dashboard","Dashboard","▦")}{nav("calendar","Calendar","▣")}{nav("tasks","All Tasks","☑")}{nav("finances","Finances","$")}{nav("design","Design","◇")}{nav("files","Files","▱")}<button onClick={create}>＋ New Project</button></nav><div className="v4-label">My Projects</div><nav className="v4-nav">{live.map(p=><div key={p.id}><button className={selected===p.id?"chosen":""} aria-expanded={selected===p.id} onClick={()=>selected===p.id?navigate("dashboard"):open(p)}>{photo(p)?<img src={photo(p)} alt=""/>:<span>▥</span>}{p.name}{p.status==="active"&&<i className="v4-dot"/>}</button>{selected===p.id&&<div className="v4-subnav">{([["projects","Overview"],["tasks","Tasks & Schedule"],["finances","Finances"],["design","Design Studio"],["files","Photos & Files"],["notes","Project Notes"],["settings","Project Settings"]] as const).map(([s,l])=><button key={s} className={section===s?"chosen":""} onClick={()=>s==="settings"?edit(p):open(p,s)}>{l}</button>)}</div>}</div>)}</nav><div className="v4-label">Archive</div><nav className="v4-nav">{nav("archived","Archived Projects","▧")}</nav></aside><main className="v4-main"><div className="v4-top"><input className="v4-search" aria-label="Search projects" placeholder="Search projects…" value={search} onChange={e=>{if(current||!["dashboard","projects","archived"].includes(section))navigate("projects");SE(e.target.value)}}/><button className="secondary" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>{error&&<p className="v4-error" role="alert">{error}</p>}{message&&<p className="v4-message">{message}</p>}
+ {current&&section!=="dashboard"?<><div className="v4-heading"><div><button className="v4-link" onClick={()=>navigate("dashboard")}>← Back to Dashboard</button><h1>{current.name}</h1><p className="v4-muted">{current.address||"No address added"} · {title(current.status)}</p></div><button onClick={()=>edit(current)}>Edit Project</button></div><section className="v4-panel v4-finance"><div>Project Budget<strong>{money(current.budget)}</strong></div><div>Start Date<strong>{date(current.start_date)}</strong></div><div>Target End Date<strong>{date(current.end_date)}</strong></div><div>Tasks completed<strong>{taskError?"—":progress(current.id)+"%"}</strong></div></section>
+ {section==="settings"&&<section className="v4-panel"><h2>Project Settings</h2>{showForm&&projectForm}<div className="v4-actions"><button onClick={()=>edit(current)}>Edit</button><button className="secondary" onClick={()=>archive(current)}>{current.status==="archived"?"Restore":"Archive"}</button><button className="secondary" disabled={busy} onClick={()=>remove(current)}>Delete</button></div></section>}
+ {section==="projects"&&<section className="v4-hero v4-projecthero">{photo(current)&&<img src={photo(current)} alt={current.name}/>}<div><span className="v4-pill">Project Overview</span><h2>{current.name}</h2></div><div className="v4-tools">{picker(current)}{photo(current)&&<button onClick={()=>FU(photo(current))}>⛶</button>}</div></section>}
+ {(["projects","tasks","finances"].includes(section))&&<Operations key={current.id+section} projectId={current.id} userId={user.id} projectBudget={Number(current.budget||0)} mode={section==="tasks"?"tasks":section==="finances"?"finances":"all"}/>}
+ {(["notes","design","files"].includes(section))&&<>{putnam(current)&&<div className="v4-unit">{[1,2,3].map(n=><button key={n} className={unit===n?"":"secondary"} onClick={()=>{V(n);NT(notes[current.id+":"+n]||"")}}>Unit {n}</button>)}</div>}{section==="notes"&&<section className="v4-panel"><h2>Project Notes</h2><textarea rows={6} value={note} onChange={e=>NT(e.target.value)}/><button onClick={()=>{const updated={...notes,[current.id+":"+(putnam(current)?unit:0)]:note};try{localStorage.setItem("buildpilot-notes-"+user.id,JSON.stringify(updated));NS(updated);M("Notes saved on this device.")}catch{ER("Could not save notes.")}}}>Save Notes</button><p className="v4-muted">Notes are saved on this device only.</p></section>}{section==="design"&&(putnam(current)?<DesignStudio key={current.id+unit} projectId={current.id} userId={user.id} unit={unit}/>:<p>Design Studio is currently configured for 158 Putnam Ave only.</p>)}{section==="files"&&<>{putnam(current)&&<><h2>Shared Project Files</h2><ProjectFiles projectId={current.id} userId={user.id} unit={null}/><h2>Unit {unit} Files</h2></>}<ProjectFiles key={current.id+unit} projectId={current.id} userId={user.id} unit={putnam(current)?unit:null}/></>}</>}
+ </>:<>
+ {section==="dashboard"&&<><div className="v4-greeting"><h1>{hour===null?"Welcome back":hour<12?"Good morning":hour<18?"Good afternoon":"Good evening"}, Cesar! {hour===null?"✨":hour<12?"☀️":hour<18?"🌤️":"🌙"}</h1><div className="v4-muted">Here's your construction workspace at a glance.</div></div><div className="v4-feature"><section className="v4-hero">{hero&&photo(hero)&&<img src={photo(hero)} alt={hero.name}/>}<div><span className="v4-pill">● Featured Project</span><h2>{hero?.name||"Your next project starts here"}</h2><p>{hero?.address||"Construction Project"}</p></div>{hero&&<div className="v4-tools">{picker(hero)}{photo(hero)&&<button aria-label="View full image" onClick={()=>FU(photo(hero))}>⛶</button>}</div>}<div className="v4-hero-actions">{live.length>1&&<button aria-label="Previous project" onClick={()=>cycle(-1)}>‹</button>}<button onClick={()=>hero?open(hero):create()}>{hero?"View Project →":"Create Project"}</button>{live.length>1&&<><span>{live.indexOf(hero)+1} / {live.length}</span><button aria-label="Next project" onClick={()=>cycle(1)}>›</button></>}</div></section><section className="v4-panel"><h2>▥ Portfolio Performance</h2><div className="v4-metrics"><div className="v4-metric">Active Projects<strong>{active}</strong><span className="v4-muted">{live.length} current projects</span></div><div className="v4-metric">Completed Tasks<strong>{taskError?"—":`${done}/${all.length}`}</strong>{bar(all.length?100*done/all.length:0)}<span className="v4-muted">{taskError?"Unavailable":`${all.length?(100*done/all.length).toFixed(1):0}% complete`}</span></div><div className="v4-metric">Upcoming Inspections<strong>{taskError?"—":inspections.length}</strong><span className="v4-muted">Dated inspection tasks · 7 days</span></div><div className="v4-metric">Overdue Tasks<strong className="v4-alert">{taskError?"—":overdue.length}</strong><span className="v4-muted">Dated unfinished tasks</span></div></div></section></div></>}
+ {taskError&&<p className="v4-error">Task data unavailable: {taskError}</p>}
+ {(["dashboard","projects","archived"].includes(section))&&<section className="v4-panel"><div className="v4-heading"><h2>{section==="archived"?"Archived Projects":"▦ Your Projects"}</h2><div className="v4-actions"><select className="v4-select" aria-label="Filter projects" value={filter} onChange={e=>FL(e.target.value)}>{["all","active","planning","on_hold","completed","archived"].map(s=><option key={s} value={s}>{s==="all"?"All current":title(s)}</option>)}</select><button onClick={create}>＋ New Project</button>{section==="dashboard"&&<button className="v4-link" onClick={()=>navigate("projects")}>View All →</button>}</div></div>{showForm&&projectForm}<div className="v4-cards">{shown.map(p=><article className="v4-card" key={p.id}><div className="v4-cardphoto">{photo(p)?<img src={photo(p)} alt={p.name}/>:"No cover photo"}<span className={"v4-status "+p.status}>{title(p.status)}</span></div><div className="v4-cardbody"><button className="v4-cardname" onClick={()=>open(p)}>{p.name} →</button><div className="v4-muted">{p.address||"No address added"}</div><div className="v4-row"><strong>{taskError?"—":progress(p.id)+"%"}</strong><div style={{flex:1}}>{bar(progress(p.id))}</div></div><div className="v4-muted">Task completion · {date(p.end_date)}</div><strong>{money(p.budget)}</strong><div className="v4-actions">{picker(p)}<button className="v4-link" onClick={()=>open(p)}>Open →</button>{section!=="dashboard"&&<><button className="secondary" onClick={()=>edit(p)}>Edit</button><button className="secondary" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button><button className="secondary" disabled={busy} onClick={()=>remove(p)}>Delete</button></>}</div></div></article>)}</div>{!shown.length&&<p className="v4-muted">No matching projects.</p>}</section>}
+ {section==="dashboard"&&<><div className="v4-bottom"><section className="v4-panel"><div className="v4-heading"><h2>☑ Today's Priorities</h2><button className="v4-link" onClick={()=>navigate("tasks")}>View All Tasks →</button></div>{due.slice().sort((a,b)=>(a.due_date||"").localeCompare(b.due_date||"")).slice(0,5).map((t,i)=><div className="v4-row" key={i}><div><strong>{t.title||t.name||"Task"}</strong><div className="v4-muted">{projects.find(p=>p.id===t.project_id)?.name} · {date(t.due_date)}</div></div><button className="v4-link" onClick={()=>{const p=projects.find(p=>p.id===t.project_id);if(p)open(p,"tasks")}}>Open →</button></div>)}{!due.length&&<p className="v4-muted">{taskError?"Task data unavailable.":"No unfinished tasks with a due date today or earlier."}</p>}</section><section className="v4-panel v4-design"><span className="v4-muted">DESIGN STUDIO</span><h2>Plan. Visualize. Build.</h2><p>Explore kitchen and bathroom designs.</p><button onClick={()=>{const p=live.find(putnam);if(p)open(p,"design");else navigate("design")}}>Open Design Studio →</button></section></div><section className="v4-panel v4-finance"><div>Planned Budget<strong>{money(budget)}</strong></div><div>Total Spent<strong>{expenseError?"—":money(spent)}</strong></div><div>Remaining Budget<strong>{expenseError?"—":money(budget-spent)}</strong></div><div>Completed Projects<strong>{live.filter(p=>p.status==="completed").length}</strong></div></section></>}
+ {section==="calendar"&&<section className="v4-panel"><h2>Calendar & Schedule</h2>{pending.filter(t=>t.due_date).sort((a,b)=>(a.due_date||"").localeCompare(b.due_date||"")).map((t,i)=><div className="v4-row" key={i}><span>{t.title||t.name||"Task"} · {projects.find(p=>p.id===t.project_id)?.name}</span><strong>{date(t.due_date)}</strong></div>)}<h3>Project Target Dates</h3>{live.filter(p=>p.end_date).sort((a,b)=>(a.end_date||"").localeCompare(b.end_date||"")).map(p=><div className="v4-row" key={p.id}><button className="v4-link" onClick={()=>open(p)}>{p.name}</button><strong>{date(p.end_date)}</strong></div>)}{!pending.some(t=>t.due_date)&&!live.some(p=>p.end_date)&&<p>No scheduled dates available.</p>}</section>}
+ {(["tasks","finances","design","files"].includes(section))&&<section className="v4-panel"><h2>{section==="tasks"?"All Tasks":title(section)}</h2>{section==="finances"&&<p>Portfolio budget: {money(budget)} · Spent: {expenseError?"Unavailable":money(spent)}</p>}{section==="tasks"&&<p>{taskError?"Task data unavailable":`${done} of ${all.length} tasks completed`}</p>}<p className="v4-muted">Select a project to manage its records.</p>{live.map(p=><div className="v4-row" key={p.id}><span>{p.name}</span><button className="v4-link" onClick={()=>open(p,section)}>Open →</button></div>)}</section>}
+ </>}{full&&<div className="v4-modal" role="dialog" aria-modal="true" aria-label="Project cover image" onClick={()=>FU(null)}><button onClick={()=>FU(null)}>Close ✕</button><img src={full} alt="Full project cover" onClick={e=>e.stopPropagation()}/></div>}</main></div>;
 }
