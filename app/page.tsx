@@ -26,6 +26,7 @@ export default function Home(){
   const [error,setError] = useState("");
   const [message,setMessage] = useState("");
   const [selectedProject,setSelectedProject] = useState<string|null>(null);
+  const [dashboardProject,setDashboardProject] = useState<string|null>(null);
   const [selectedUnit,setSelectedUnit] = useState(1);
   const [notes,setNotes] = useState<Record<string,string>>({});
   const [note,setNote] = useState("");
@@ -42,7 +43,6 @@ export default function Home(){
   const [coverError,setCoverError] = useState("");
   const [coverRefresh,setCoverRefresh] = useState(0);
 
-
   useEffect(()=>{
     const refresh = ()=>setHour(new Date().getHours());
     refresh();
@@ -58,7 +58,14 @@ export default function Home(){
     const {data:{subscription}} = supabase.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));
     return ()=>subscription.unsubscribe();
   },[]);
-  useEffect(()=>{if(user)void load();else{setProjects([]);setSelectedProject(null)}},[user]);
+  useEffect(()=>{
+    if(user)void load();
+    else{
+      setProjects([]);
+      setSelectedProject(null);
+      setDashboardProject(null);
+    }
+  },[user]);
   useEffect(()=>{if(!user)return;try{const value=localStorage.getItem("buildpilot-notes-"+user.id);setNotes(value?JSON.parse(value):{})}catch{setNotes({})}},[user]);
 
   async function load(){
@@ -82,7 +89,6 @@ export default function Home(){
     return ()=>{cancelled=true};
   },[user,projects,selectedProject,section]);
 
-  // Cover images are private Supabase Storage objects; signed URLs expire after one hour.
   useEffect(()=>{
     if(!user){setCoverUrls({});return}
     let cancelled=false;
@@ -169,7 +175,10 @@ export default function Home(){
     if(!user||!window.confirm(p.status==="archived"?"Restore this project?":"Archive this project?"))return;
     setError("");
     const {error}=await supabase.from("projects").update({status:p.status==="archived"?"planning":"archived"}).eq("id",p.id).eq("user_id",user.id);
-    if(error)setError(error.message);else await load();
+    if(error)setError(error.message);else{
+      if(dashboardProject===p.id)setDashboardProject(null);
+      await load();
+    }
   }
   async function deleteProject(p:Project){
     if(!user)return;
@@ -180,6 +189,7 @@ export default function Home(){
     setBusy(false);
     if(deleteError){setError(deleteError.message);return}
     if(selectedProject===p.id)setSelectedProject(null);
+    if(dashboardProject===p.id)setDashboardProject(null);
     setMessage(`Deleted ${p.name}. Check file storage separately for any uploaded files.`);
     await load();
   }
@@ -187,6 +197,10 @@ export default function Home(){
     setSection(next);setShowForm(false);setEditingId(null);
     if(next==="dashboard"||next==="projects")setSelectedProject(null);
     else if(!selectedProject&&projects.length)setSelectedProject(projects.find(p=>p.status!=="archived")?.id||null);
+  }
+  function selectDashboardProject(p:Project){
+    setDashboardProject(p.id);
+    navigate("dashboard");
   }
   function openProject(p:Project){
     setSection("projects");setSelectedProject(p.id);setSelectedUnit(1);
@@ -207,7 +221,7 @@ export default function Home(){
   const completed=live.filter(p=>p.status==="completed").length;
   const shown=projects.filter(p=>filter==="all"?p.status!=="archived":filter==="archived"?p.status==="archived":p.status===filter);
   const current=projects.find(p=>p.id===selectedProject);
-  const featured=live.find(p=>/158\s+putnam/i.test(p.name+" "+(p.address||"")))||live[0];
+  const featured=live.find(p=>p.id===dashboardProject)||live.find(p=>/158\s+putnam/i.test(p.name+" "+(p.address||"")))||live[0];
   const budget=live.reduce((sum,p)=>sum+Number(p.budget||0),0);
   const putnam=current ? /158\s+putnam/i.test(current.name+" "+(current.address||"")) : false;
 
@@ -224,6 +238,14 @@ export default function Home(){
     .bp-nav{display:flex;flex-direction:column;gap:8px;margin-top:16px}
     .bp-nav button{display:block;width:100%;background:transparent!important;color:#53657c!important;text-align:left!important;border:0!important;border-radius:13px!important;padding:14px 15px!important;font-weight:600!important;font-size:14px!important}
     .bp-nav button.selected,.bp-nav button:hover{background:#fff!important;color:#1769d2!important;box-shadow:0 5px 18px #254b7812}
+
+    .bp-sidebar-projects{display:flex;flex-direction:column;gap:5px;max-height:340px;overflow-y:auto;min-width:0}
+    .bp-sidebar-projects button{display:block;width:100%;text-align:left!important;background:transparent!important;border:0!important;color:#53657c!important;font-size:13px!important;font-weight:600!important;padding:11px 14px!important;border-radius:11px!important;white-space:normal;overflow-wrap:anywhere}
+    .bp-sidebar-projects button:hover{background:#ffffff!important;color:#1769d2!important}
+    .bp-sidebar-projects button.selected{background:#e3edff!important;color:#1769d2!important;box-shadow:inset 3px 0 0 #2679ef}
+    .bp-sidebar-projects button:focus-visible{outline:2px solid #2679ef;outline-offset:-2px}
+    .bp-sidebar-empty{color:#8390a3;font-size:12px;padding:8px 14px}
+
     .bp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:23px}
     .bp-eyebrow{color:#7b8ca3;font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin:0 0 9px}
     .bp-title{color:#1c2d43;font-size:clamp(30px,3.5vw,46px);font-weight:800;letter-spacing:-1.7px;line-height:1.14;margin:0}
@@ -233,7 +255,6 @@ export default function Home(){
     .bp-quick button{background:#fff!important;border:1px solid #dbe5ee!important;color:#173451!important;border-radius:13px!important;padding:11px 14px!important;font-weight:700!important;box-shadow:0 4px 16px #24415e0a}
     .bp-feature{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(250px,.7fr);gap:18px;margin-bottom:22px}
     .bp-feature-photo{min-height:290px;position:relative;overflow:hidden;border-radius:26px;background:linear-gradient(135deg,#203b5c,#4c7293 55%,#a9bfcf);padding:28px;display:flex;flex-direction:column;justify-content:space-between;color:#fff;box-shadow:0 12px 30px #17314d24}
-    /* Original 158 Putnam Ave photograph; displayed without image filters or alterations. */
     .bp-feature-photo.bp-putnam-cover{background-image:linear-gradient(90deg,rgba(9,25,43,.67) 0%,rgba(9,25,43,.18) 58%,rgba(9,25,43,.02) 100%),url("/putnam-cover.jpg");background-size:cover;background-position:center center}
     .bp-feature-photo.bp-putnam-cover:before{display:none}
     .bp-feature-photo.bp-custom-cover{background-size:cover;background-position:center center}
@@ -241,8 +262,6 @@ export default function Home(){
     .bp-cover-picker{display:inline-flex;align-items:center;justify-content:center;cursor:pointer;background:#fff!important;color:#1769d2!important;border:1px solid #dce8fa;border-radius:11px;padding:9px 12px;font-size:12px;font-weight:750;box-shadow:0 4px 15px #172b4420}
     .bp-cover-picker input{display:none}.bp-cover-picker:has(input:disabled){opacity:.6;cursor:wait}
     .bp-cover-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:2}
-
-    /* BuildPilot 3.4 — Clean Project Cover */
     .bp-feature-photo{position:relative}
     .bp-feature-photo .bp-cover-description{font-size:14px!important;font-weight:550;letter-spacing:.1px;margin-top:8px!important}
     .bp-feature-photo .bp-cover-actions{margin-top:18px}
@@ -252,7 +271,6 @@ export default function Home(){
     .bp-cover-picker.bp-cover-picker-compact:hover{background:#fff!important}
     @media(max-width:760px){.bp-cover-corner{top:14px;right:14px}.bp-cover-picker.bp-cover-picker-compact{width:35px;height:35px;min-width:35px}.bp-feature-photo .bp-feature-open{padding:10px 13px!important}}
     .bp-cover-error{background:#fff1f0;color:#a91b1b;border-radius:12px;padding:12px 15px;margin-bottom:14px;font-size:13px}
-
     .bp-feature-photo.bp-putnam-cover h2,.bp-feature-photo.bp-putnam-cover p{text-shadow:0 2px 10px rgba(0,0,0,.55)}
     .bp-feature-photo.bp-putnam-cover .bp-feature-pill{background:rgba(16,35,56,.45);backdrop-filter:blur(8px)}
     .bp-feature-photo:before{content:"";position:absolute;right:-30px;bottom:-45px;width:65%;height:78%;opacity:.3;background:repeating-linear-gradient(90deg,transparent 0 44px,#dbeaff 45px 47px,transparent 48px 93px),linear-gradient(0deg,#fff5,transparent);clip-path:polygon(10% 25%,35% 10%,55% 25%,75% 7%,98% 25%,98% 100%,10% 100%)}
@@ -272,11 +290,47 @@ export default function Home(){
     .bp-address{font-size:13px;color:#72859a;margin:10px 0 17px;overflow-wrap:anywhere}.bp-projectbudget{font-size:22px;font-weight:850;color:#153451;margin:0}.bp-small{font-size:11px;color:#8495a6;margin:3px 0 15px}.bp-dates{border-top:1px solid #e8edf3;padding-top:12px;font-size:12px;color:#60788c}
     .bp-projectfoot{display:flex;justify-content:space-between;align-items:center;gap:9px;margin-top:15px;flex-wrap:wrap}.bp-open{background:#eaf2ff!important;color:#2679ef!important;border:1px solid #d9e8ff!important;padding:8px 12px!important;border-radius:11px!important;font-weight:750!important}.bp-archive{font-size:12px!important;background:transparent!important;color:#7c91a4!important;border:0!important;padding:8px!important}.bp-danger{background:#fff1f0!important;color:#b42318!important;border:1px solid #ffd0cb!important;border-radius:8px!important;padding:8px!important;font-weight:700!important}
     .bp-bottom{display:grid;grid-template-columns:1fr 1fr;gap:18px}.bp-listrow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid #edf1f5;color:#435e77;font-size:13px}.bp-empty{color:#8596a6;font-size:13px;line-height:1.6}.bp-form{background:#f8fafc;border:1px solid #e1e9f1;border-radius:14px;padding:17px;margin-bottom:18px}.bp-form label{display:block;margin-bottom:5px}.bp-form input,.bp-form select{max-width:100%}.bp-filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.bp-filter select{width:auto;min-width:130px}.bp-msg{margin:12px 0;padding:10px;border-radius:8px;background:#e5f7ed;color:#167b50}
-    @media(max-width:1050px){.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:950px){.bp-feature{grid-template-columns:1fr}}@media(max-width:760px){.bp-shell .sidebar{min-width:0;background:#f2f6fc;border-right:0}.bp-shell .main{padding:20px 14px}.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.bp-stat{padding:15px}.bp-projects,.bp-bottom{grid-template-columns:1fr}.bp-feature-photo{min-height:240px}.bp-panel{padding:17px}}@media(max-width:400px){.bp-stat-value{font-size:22px}.bp-stat-icon{width:30px;height:30px}}
+    @media(max-width:1050px){.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:950px){.bp-feature{grid-template-columns:1fr}}
+    @media(max-width:760px){.bp-shell .sidebar{min-width:0;background:#f2f6fc;border-right:0}.bp-shell .main{padding:20px 14px}.bp-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.bp-stat{padding:15px}.bp-projects,.bp-bottom{grid-template-columns:1fr}.bp-feature-photo{min-height:240px}.bp-panel{padding:17px}.bp-sidebar-projects{max-height:220px}}
+    @media(max-width:400px){.bp-stat-value{font-size:22px}.bp-stat-icon{width:30px;height:30px}}
   `}</style>
-  <aside className="sidebar"><div className="brand">Build<span>Pilot</span></div><p className="bp-caption">Workspace</p><nav className="bp-nav" aria-label="Main navigation">{([
-    ["dashboard","▦ Dashboard"],["projects","▤ Projects & Units"],["finances","$ Financial Management"],["tasks","☑ Tasks & Schedule"],["design","◈ Design Studio"],["files","▧ Photos & Blueprints"]
-  ] as const).map(([key,label])=><button key={key} type="button" className={section===key?"selected":""} onClick={()=>navigate(key)}>{label}</button>)}</nav><p className="bp-caption">Construction management</p><p className="bp-side-note">Plan, track and deliver every project.</p></aside>
+
+  <aside className="sidebar">
+    <div className="brand">Build<span>Pilot</span></div>
+    <p className="bp-caption">Workspace</p>
+    <nav className="bp-nav" aria-label="Main navigation">{([
+      ["dashboard","▦ Dashboard"],
+      ["projects","▤ Projects & Units"],
+      ["finances","$ Financial Management"],
+      ["tasks","☑ Tasks & Schedule"],
+      ["design","◈ Design Studio"],
+      ["files","▧ Photos & Blueprints"]
+    ] as const).map(([key,label])=>
+      <button key={key} type="button" className={section===key?"selected":""} onClick={()=>navigate(key)}>{label}</button>
+    )}</nav>
+
+    <p className="bp-caption">My Projects</p>
+    <nav className="bp-sidebar-projects" aria-label="My Projects">
+      {live.length===0?<p className="bp-sidebar-empty">No projects yet.</p>:
+        live.map(p=>
+          <button
+            key={p.id}
+            type="button"
+            className={section==="dashboard"&&featured?.id===p.id?"selected":""}
+            aria-pressed={section==="dashboard"&&featured?.id===p.id}
+            onClick={()=>selectDashboardProject(p)}
+          >
+            {p.name}
+          </button>
+        )
+      }
+    </nav>
+
+    <p className="bp-caption">Construction management</p>
+    <p className="bp-side-note">Plan, track and deliver every project.</p>
+  </aside>
+
   <main className="main">
   {current&&section!=="dashboard" ? <>
     <div className="bp-top"><div><button className="secondary" onClick={()=>{setSelectedProject(null);setMessage("")}}>← Back to Projects</button><h1>{current.name}</h1><p className="muted">{current.address||"No address added"} · {title(current.status)}</p></div><button className="secondary" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>
@@ -291,13 +345,122 @@ export default function Home(){
   </> : <>
     <div className="bp-top"><div><p className="bp-eyebrow">BuildPilot / Your workspace</p><h1 className="bp-title">{greeting}, Cesar! {greetingIcon}</h1><p className="bp-subtitle">Your construction workspace is ready. Let’s make progress today.</p></div><button className="bp-signout" onClick={()=>supabase.auth.signOut()}>Sign out</button></div>
     <div className="bp-quick"><button onClick={()=>navigate("projects")}>Manage Projects →</button><button onClick={()=>navigate("finances")}>Track Expenses →</button><button onClick={()=>navigate("tasks")}>Manage Tasks →</button></div>
-    {coverError&&<p className="bp-cover-error" role="alert">{coverError}</p>}<div className="bp-feature"><section className={"bp-feature-photo"+(featured&&coverUrls[featured.id]?" bp-custom-cover":featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?" bp-putnam-cover":"")} style={featured&&coverUrls[featured.id]?{backgroundImage:`linear-gradient(90deg,rgba(9,25,43,.67),rgba(9,25,43,.10)),url("${coverUrls[featured.id]}")`}:undefined}><div><span className="bp-feature-pill">✦ Featured Project</span><h2>{featured?.name||"Your next project starts here"}</h2><p className="bp-cover-description">{featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?"Residential Townhouses · 3 Units":featured?"Construction Project":"Create a project to get started"}</p></div><div className="bp-cover-actions"><button className="bp-feature-open" onClick={()=>featured?openProject(featured):startCreate()}>{featured?"Open Project →":"Create Project →"}</button></div>{featured&&<div className="bp-cover-corner">{coverPicker(featured,true)}</div>}</section><section className="bp-feature-summary"><h3>Portfolio Overview</h3><div className="bp-feature-row"><span>Projects</span><strong>{live.length}</strong></div><div className="bp-feature-row"><span>Planned Budget</span><strong>{money(budget)}</strong></div><div className="bp-feature-row"><span>Total Spent</span><strong>{money(portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Remaining Budget</span><strong>{money(budget-portfolioSpent)}</strong></div><div className="bp-feature-row"><span>Tasks Completed</span><strong>{portfolioTasks.done} / {portfolioTasks.total}</strong></div></section></div>
-    <div className="bp-stats"><div className="bp-stat"><span className="bp-stat-icon">▦</span><div className="bp-stat-label">Total Projects</div><div className="bp-stat-value">{live.length}</div><div className="bp-stat-foot">Excludes archived projects</div></div><div className="bp-stat"><span className="bp-stat-icon">◉</span><div className="bp-stat-label">Active Projects</div><div className="bp-stat-value">{active}</div><div className="bp-stat-foot">Currently marked active</div></div><div className="bp-stat"><span className="bp-stat-icon">$</span><div className="bp-stat-label">Planned Budget</div><div className="bp-stat-value">{money(budget)}</div><div className="bp-stat-foot">Spent: {money(portfolioSpent)} · Remaining: {money(budget-portfolioSpent)}</div></div><div className="bp-stat"><span className="bp-stat-icon">◷</span><div className="bp-stat-label">Planning Projects</div><div className="bp-stat-value">{planning}</div><div className="bp-stat-foot">{completed} projects completed · {portfolioTasks.done}/{portfolioTasks.total} tasks done</div></div></div>
-    <section className="bp-panel"><div className="bp-panel-header"><div><p className="bp-eyebrow">Portfolio</p><h2 className="bp-panel-title">Your Projects</h2></div><div className="bp-filter"><label htmlFor="project-filter">Filter</label><select id="project-filter" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All current</option><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option><option value="archived">Archived</option></select><button className="bp-action" onClick={()=>showForm?(setShowForm(false),setEditingId(null)):startCreate()}>{showForm?"Cancel":"+ New Project"}</button></div></div>
-    {error&&<p className="error" role="alert">{error}</p>}{message&&<p className="bp-msg">{message}</p>}
-    {showForm&&<form className="bp-form" onSubmit={saveProject}><h3>{editingId?"Edit Project":"New Project"}</h3><div className="formgrid"><div><label>Project name *</label><input required maxLength={160} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div><div><label>Address</label><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></div><div><label>Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}><option value="planning">Planning</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option>{editingId&&<option value="archived">Archived</option>}</select></div><div><label>Budget (USD)</label><input type="number" min="0" step="0.01" value={form.budget} onChange={e=>setForm({...form,budget:e.target.value})}/></div><div><label>Start date</label><input type="date" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></div><div><label>Target end date</label><input type="date" value={form.end_date} onChange={e=>setForm({...form,end_date:e.target.value})}/></div></div><p><button className="bp-action" disabled={busy}>{busy?"Saving…":editingId?"Update Project":"Save Project"}</button></p></form>}
-    <div className="bp-projects">{shown.length===0?<p className="bp-empty">No projects in this category.</p>:shown.map(p=><article key={p.id} className="bp-project"><div className="bp-projecthead"><button className="bp-projectname" onClick={()=>openProject(p)}>{p.name} ↗</button><span className={"bp-badge "+(p.status==="active"?"active":p.status==="planning"?"planning":"")}>{title(p.status)}</span></div><p className="bp-address">{p.address||"No address added"}</p><div className="bp-projectbudget">{money(p.budget)}</div><div className="bp-small">Planned project budget</div><div className="bp-dates">{date(p.start_date)} → {date(p.end_date)}</div><div className="bp-projectfoot"><button className="bp-open" onClick={()=>openProject(p)}>Open Project →</button>{coverPicker(p)}<button className="bp-open" onClick={()=>startEdit(p)}>Edit</button><button className="bp-archive" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button><button className="bp-danger" disabled={busy} onClick={()=>deleteProject(p)}>Delete</button></div></article>)}</div></section>
-    <div className="bp-bottom"><section className="bp-panel"><p className="bp-eyebrow">Project pipeline</p><h2 className="bp-panel-title">Status Overview</h2>{[["Planning",planning],["Active",active],["Completed",completed],["On Hold",live.filter(p=>p.status==="on_hold").length]].map(([name,count])=><div className="bp-listrow" key={name}><span>{name}</span><strong>{count}</strong></div>)}</section><section className="bp-panel"><p className="bp-eyebrow">Schedule</p><h2 className="bp-panel-title">Target Completion Dates</h2>{live.filter(p=>p.end_date&&p.status!=="completed").sort((a,b)=>(a.end_date||"").localeCompare(b.end_date||"")).slice(0,4).map(p=><div className="bp-listrow" key={p.id}><span>{p.name}</span><strong>{date(p.end_date)}</strong></div>)}{!live.some(p=>p.end_date&&p.status!=="completed")&&<p className="bp-empty">No upcoming completion dates.</p>}</section></div><p className="bp-empty">Choose Financial Management or Tasks & Schedule in the sidebar to manage live project records.</p>
+
+    {coverError&&<p className="bp-cover-error" role="alert">{coverError}</p>}
+
+    <div className="bp-feature">
+      <section
+        className={"bp-feature-photo"+(featured&&coverUrls[featured.id]?" bp-custom-cover":featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?" bp-putnam-cover":"")}
+        style={featured&&coverUrls[featured.id]?{backgroundImage:`linear-gradient(90deg,rgba(9,25,43,.67),rgba(9,25,43,.10)),url("${coverUrls[featured.id]}")`}:undefined}
+      >
+        <div>
+          <span className="bp-feature-pill">✦ Featured Project</span>
+          <h2>{featured?.name||"Your next project starts here"}</h2>
+          <p className="bp-cover-description">{featured&&/158\s+putnam/i.test(featured.name+" "+(featured.address||""))?"Residential Townhouses · 3 Units":featured?"Construction Project":"Create a project to get started"}</p>
+        </div>
+        <div className="bp-cover-actions">
+          <button className="bp-feature-open" onClick={()=>featured?openProject(featured):startCreate()}>{featured?"Open Project →":"Create Project →"}</button>
+        </div>
+        {featured&&<div className="bp-cover-corner">{coverPicker(featured,true)}</div>}
+      </section>
+
+      <section className="bp-feature-summary">
+        <h3>Portfolio Overview</h3>
+        <div className="bp-feature-row"><span>Projects</span><strong>{live.length}</strong></div>
+        <div className="bp-feature-row"><span>Planned Budget</span><strong>{money(budget)}</strong></div>
+        <div className="bp-feature-row"><span>Total Spent</span><strong>{money(portfolioSpent)}</strong></div>
+        <div className="bp-feature-row"><span>Remaining Budget</span><strong>{money(budget-portfolioSpent)}</strong></div>
+        <div className="bp-feature-row"><span>Tasks Completed</span><strong>{portfolioTasks.done} / {portfolioTasks.total}</strong></div>
+      </section>
+    </div>
+
+    <div className="bp-stats">
+      <div className="bp-stat"><span className="bp-stat-icon">▦</span><div className="bp-stat-label">Total Projects</div><div className="bp-stat-value">{live.length}</div><div className="bp-stat-foot">Excludes archived projects</div></div>
+      <div className="bp-stat"><span className="bp-stat-icon">◉</span><div className="bp-stat-label">Active Projects</div><div className="bp-stat-value">{active}</div><div className="bp-stat-foot">Currently marked active</div></div>
+      <div className="bp-stat"><span className="bp-stat-icon">$</span><div className="bp-stat-label">Planned Budget</div><div className="bp-stat-value">{money(budget)}</div><div className="bp-stat-foot">Spent: {money(portfolioSpent)} · Remaining: {money(budget-portfolioSpent)}</div></div>
+      <div className="bp-stat"><span className="bp-stat-icon">◷</span><div className="bp-stat-label">Planning Projects</div><div className="bp-stat-value">{planning}</div><div className="bp-stat-foot">{completed} projects completed · {portfolioTasks.done}/{portfolioTasks.total} tasks done</div></div>
+    </div>
+
+    <section className="bp-panel">
+      <div className="bp-panel-header">
+        <div><p className="bp-eyebrow">Portfolio</p><h2 className="bp-panel-title">Your Projects</h2></div>
+        <div className="bp-filter">
+          <label htmlFor="project-filter">Filter</label>
+          <select id="project-filter" value={filter} onChange={e=>setFilter(e.target.value)}>
+            <option value="all">All current</option>
+            <option value="planning">Planning</option>
+            <option value="active">Active</option>
+            <option value="on_hold">On hold</option>
+            <option value="completed">Completed</option>
+            <option value="archived">Archived</option>
+          </select>
+          <button className="bp-action" onClick={()=>showForm?(setShowForm(false),setEditingId(null)):startCreate()}>{showForm?"Cancel":"+ New Project"}</button>
+        </div>
+      </div>
+
+      {error&&<p className="error" role="alert">{error}</p>}
+      {message&&<p className="bp-msg">{message}</p>}
+
+      {showForm&&<form className="bp-form" onSubmit={saveProject}>
+        <h3>{editingId?"Edit Project":"New Project"}</h3>
+        <div className="formgrid">
+          <div><label>Project name *</label><input required maxLength={160} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></div>
+          <div><label>Address</label><input value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/></div>
+          <div><label>Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>
+            <option value="planning">Planning</option>
+            <option value="active">Active</option>
+            <option value="on_hold">On hold</option>
+            <option value="completed">Completed</option>
+            {editingId&&<option value="archived">Archived</option>}
+          </select></div>
+          <div><label>Budget (USD)</label><input type="number" min="0" step="0.01" value={form.budget} onChange={e=>setForm({...form,budget:e.target.value})}/></div>
+          <div><label>Start date</label><input type="date" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></div>
+          <div><label>Target end date</label><input type="date" value={form.end_date} onChange={e=>setForm({...form,end_date:e.target.value})}/></div>
+        </div>
+        <p><button className="bp-action" disabled={busy}>{busy?"Saving…":editingId?"Update Project":"Save Project"}</button></p>
+      </form>}
+
+      <div className="bp-projects">
+        {shown.length===0?<p className="bp-empty">No projects in this category.</p>:shown.map(p=>
+          <article key={p.id} className="bp-project">
+            <div className="bp-projecthead">
+              <button className="bp-projectname" onClick={()=>openProject(p)}>{p.name} ↗</button>
+              <span className={"bp-badge "+(p.status==="active"?"active":p.status==="planning"?"planning":"")}>{title(p.status)}</span>
+            </div>
+            <p className="bp-address">{p.address||"No address added"}</p>
+            <div className="bp-projectbudget">{money(p.budget)}</div>
+            <div className="bp-small">Planned project budget</div>
+            <div className="bp-dates">{date(p.start_date)} → {date(p.end_date)}</div>
+            <div className="bp-projectfoot">
+              <button className="bp-open" onClick={()=>openProject(p)}>Open Project →</button>
+              {coverPicker(p)}
+              <button className="bp-open" onClick={()=>startEdit(p)}>Edit</button>
+              <button className="bp-archive" onClick={()=>archive(p)}>{p.status==="archived"?"Restore":"Archive"}</button>
+              <button className="bp-danger" disabled={busy} onClick={()=>deleteProject(p)}>Delete</button>
+            </div>
+          </article>
+        )}
+      </div>
+    </section>
+
+    <div className="bp-bottom">
+      <section className="bp-panel">
+        <p className="bp-eyebrow">Project pipeline</p>
+        <h2 className="bp-panel-title">Status Overview</h2>
+        {[["Planning",planning],["Active",active],["Completed",completed],["On Hold",live.filter(p=>p.status==="on_hold").length]].map(([name,count])=>
+          <div className="bp-listrow" key={name}><span>{name}</span><strong>{count}</strong></div>
+        )}
+      </section>
+      <section className="bp-panel">
+        <p className="bp-eyebrow">Schedule</p>
+        <h2 className="bp-panel-title">Target Completion Dates</h2>
+        {live.filter(p=>p.end_date&&p.status!=="completed").sort((a,b)=>(a.end_date||"").localeCompare(b.end_date||"")).slice(0,4).map(p=>
+          <div className="bp-listrow" key={p.id}><span>{p.name}</span><strong>{date(p.end_date)}</strong></div>
+        )}
+        {!live.some(p=>p.end_date&&p.status!=="completed")&&<p className="bp-empty">No upcoming completion dates.</p>}
+      </section>
+    </div>
+    <p className="bp-empty">Choose Financial Management or Tasks & Schedule in the sidebar to manage live project records.</p>
   </>}
   </main></div>;
 }
